@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wi-postgres
+    environment:
+      POSTGRES_USER: wi
+      POSTGRES_PASSWORD: wi
+      POSTGRES_DB: webhook_inspector
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wi -d webhook_inspector"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
