@@ -10,7 +10,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "typecheck": "tsc --build",
+    "typecheck": "tsc --build && tsc -p apps/api/tsconfig.test.json",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down"
   },

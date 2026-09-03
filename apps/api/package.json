@@ -10,10 +10,13 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "dotenv": "^17.4.2",
     "tsx": "^4.23.13",
     "vitest": "^4.1.11"
   },
   "dependencies": {
-    "fastify": "^5.12.1"
+    "@wi/db": "*",
+    "fastify": "^5.12.1",
+    "zod": "^4.5.4"
   }
 }

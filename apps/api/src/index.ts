@@ -1,8 +1,10 @@
+import { createDb } from '@wi/db';
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 
 const config = loadConfig();
-const app = buildApp();
+const db = createDb(config.databaseUrl);
+const app = buildApp(db);
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
