@@ -2,6 +2,7 @@ import { bins, createDb, requests } from '@wi/db';
 import { desc, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
+import { MAX_BODY_BYTES } from './capture.js';
 
 const db = createDb(process.env.DATABASE_URL!);
 const app = buildApp(db);
@@ -117,5 +118,69 @@ describe('capture endpoint', () => {
     const response = await app.inject({ method: 'POST', url: '/api/bins', payload: { name: 'Still JSON' } });
     expect(response.statusCode).toBe(201);
     await db.delete(bins).where(eq(bins.id, response.json().id));
+  });
+});
+
+describe('body size limit', () => {
+  it('stores a body one byte under the limit in full', async () => {
+    const payload = Buffer.alloc(MAX_BODY_BYTES - 1, 'a');
+    const response = await app.inject({
+      method: 'POST',
+      url: `/i/${slug}`,
+      headers: { 'content-type': 'application/octet-stream' },
+      payload,
+    });
+
+    const row = await latest();
+    expect(response.statusCode).toBe(200);
+    expect(row.truncated).toBe(false);
+    expect(row.bodySize).toBe(MAX_BODY_BYTES - 1);
+    expect(row.body).toHaveLength(MAX_BODY_BYTES - 1);
+  });
+
+  it('stores a body exactly at the limit in full', async () => {
+    const payload = Buffer.alloc(MAX_BODY_BYTES, 'b');
+    const response = await app.inject({
+      method: 'POST',
+      url: `/i/${slug}`,
+      headers: { 'content-type': 'application/octet-stream' },
+      payload,
+    });
+
+    const row = await latest();
+    expect(response.statusCode).toBe(200);
+    expect(row.truncated).toBe(false);
+    expect(row.bodySize).toBe(MAX_BODY_BYTES);
+  });
+
+  it('answers 413 and keeps a truncated record when over the limit', async () => {
+    const payload = Buffer.alloc(MAX_BODY_BYTES + 4096, 'c');
+    const response = await app.inject({
+      method: 'POST',
+      url: `/i/${slug}`,
+      headers: { 'content-type': 'application/octet-stream' },
+      payload,
+    });
+
+    const row = await latest();
+    expect(response.statusCode).toBe(413);
+    expect(response.json()).toMatchObject({ error: 'body_too_large', limit: MAX_BODY_BYTES });
+    expect(row.truncated).toBe(true);
+    expect(row.bodySize).toBe(MAX_BODY_BYTES + 4096);
+    expect(row.body).toHaveLength(MAX_BODY_BYTES);
+    expect(row.body.every((byte) => byte === 'c'.charCodeAt(0))).toBe(true);
+  });
+
+  it('keeps both values of a repeated header', async () => {
+    await app.inject({
+      method: 'POST',
+      url: `/i/${slug}`,
+      headers: { 'x-forwarded-for': ['10.0.0.1', '10.0.0.2'] },
+      payload: 'x',
+    });
+
+    const forwarded = (await latest()).headers['x-forwarded-for'];
+    expect(forwarded).toContain('10.0.0.1');
+    expect(forwarded).toContain('10.0.0.2');
   });
 });

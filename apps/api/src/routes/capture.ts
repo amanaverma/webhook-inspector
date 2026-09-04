@@ -4,6 +4,16 @@ import type { FastifyInstance, FastifyReply, FastifyRequest, HTTPMethods } from 
 
 const METHODS: HTTPMethods[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 
+export const MAX_BODY_BYTES = 1_048_576;
+
+type CapturedBody = {
+  /** The first `MAX_BODY_BYTES` bytes of the body. */
+  bytes: Buffer;
+  /** Total bytes the client sent, which exceeds `bytes.length` when truncated. */
+  size: number;
+  truncated: boolean;
+};
+
 /** Header values Fastify may hand over as an array are joined with a comma, as on the wire. */
 function flattenHeaders(request: FastifyRequest): Record<string, string> {
   const headers: Record<string, string> = {};
@@ -18,8 +28,9 @@ function flattenHeaders(request: FastifyRequest): Record<string, string> {
  * Registers the capture endpoint on `/i/:slug` and every path below it.
  *
  * Stores the request as it arrived, including the unparsed body, and answers
- * 200 once the row is written. An unknown or inactive slug gets a 404 and
- * nothing is stored.
+ * 200 once the row is written. A body over `MAX_BODY_BYTES` is stored up to
+ * that limit with `truncated` set and answered 413. An unknown or inactive slug
+ * gets a 404 and nothing is stored.
  *
  * Routes are registered inside their own plugin scope so that replacing the
  * body parser with one that keeps raw bytes does not affect the JSON parsing
@@ -28,8 +39,25 @@ function flattenHeaders(request: FastifyRequest): Record<string, string> {
 export function registerCaptureRoutes(app: FastifyInstance, db: Db): void {
   void app.register(async (scope) => {
     scope.removeAllContentTypeParsers();
-    scope.addContentTypeParser('*', { parseAs: 'buffer' }, (_request, body, done) => {
-      done(null, body);
+    scope.addContentTypeParser('*', (_request, payload, done) => {
+      const kept: Buffer[] = [];
+      let keptBytes = 0;
+      let size = 0;
+
+      payload.on('data', (chunk: Buffer) => {
+        size += chunk.byteLength;
+        if (keptBytes >= MAX_BODY_BYTES) return;
+
+        const room = MAX_BODY_BYTES - keptBytes;
+        const slice = chunk.byteLength <= room ? chunk : chunk.subarray(0, room);
+        kept.push(slice);
+        keptBytes += slice.byteLength;
+      });
+
+      payload.on('error', done);
+      payload.on('end', () => {
+        done(null, { bytes: Buffer.concat(kept), size, truncated: size > MAX_BODY_BYTES });
+      });
     });
 
     const handler = async (request: FastifyRequest, reply: FastifyReply) => {
@@ -45,7 +73,12 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db): void {
         return reply.code(404).send({ error: 'unknown_bin' });
       }
 
-      const body = Buffer.isBuffer(request.body) ? request.body : Buffer.alloc(0);
+      const body = (request.body as CapturedBody | undefined) ?? {
+        bytes: Buffer.alloc(0),
+        size: 0,
+        truncated: false,
+      };
+
       const [row] = await db
         .insert(requests)
         .values({
@@ -54,12 +87,21 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db): void {
           path: request.url.split('?')[0]!,
           query: request.query as Record<string, string | string[]>,
           headers: flattenHeaders(request),
-          body,
-          bodySize: body.byteLength,
+          body: body.bytes,
+          bodySize: body.size,
+          truncated: body.truncated,
           contentType: request.headers['content-type'] ?? null,
           sourceIp: request.ip,
         })
         .returning({ id: requests.id, receivedAt: requests.receivedAt });
+
+      if (body.truncated) {
+        return reply.code(413).send({
+          error: 'body_too_large',
+          limit: MAX_BODY_BYTES,
+          id: row!.id,
+        });
+      }
 
       return reply.code(200).send({ id: row!.id, receivedAt: row!.receivedAt });
     };
