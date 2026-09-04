@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: wi
+          POSTGRES_PASSWORD: wi
+          POSTGRES_DB: webhook_inspector
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wi -d webhook_inspector"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://wi:wi@localhost:5432/webhook_inspector
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Apply migrations
+        run: npm run migrate -w @wi/db
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test -w @wi/api
