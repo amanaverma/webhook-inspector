@@ -1,6 +1,7 @@
 import type { Db } from '@wi/db';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { registerBinRoutes } from './routes/bins.js';
+import { registerCaptureRoutes } from './routes/capture.js';
 
 /**
  * Builds the Fastify instance with every route registered.
@@ -13,6 +14,7 @@ export function buildApp(db: Db): FastifyInstance {
 
   app.get('/health', async () => ({ status: 'ok' }));
   registerBinRoutes(app, db);
+  registerCaptureRoutes(app, db);
 
   return app;
 }
