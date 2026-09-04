@@ -2,7 +2,10 @@ import { bins, requests, type Db } from '@wi/db';
 import { and, desc, eq, lt, or, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { encodeBody } from './body-encoding.js';
 import { decodeCursor, encodeCursor } from './cursor.js';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -81,5 +84,16 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
       requests: page,
       nextCursor: rows.length > parsed.data.limit && last ? encodeCursor(last) : null,
     };
+  });
+
+  app.get('/api/requests/:id', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!UUID.test(id)) return reply.code(400).send({ error: 'invalid_id' });
+
+    const [row] = await db.select().from(requests).where(eq(requests.id, id)).limit(1);
+    if (!row) return reply.code(404).send({ error: 'not_found' });
+
+    const { body, ...rest } = row;
+    return { ...rest, ...encodeBody(body, row.contentType) };
   });
 }

@@ -117,3 +117,55 @@ describe('GET /api/bins/:slug/requests', () => {
     expect(response.json().error).toBe('invalid_cursor');
   });
 });
+
+describe('GET /api/requests/:id', () => {
+  it('returns the full record with a text body', async () => {
+    const payload = '{"amount":1200}';
+    await app.inject({
+      method: 'POST',
+      url: `/i/${slug}/detail`,
+      headers: { 'content-type': 'application/json', 'x-signature': 'sig' },
+      payload,
+    });
+
+    const list = (await app.inject({ method: 'GET', url: `/api/bins/${slug}/requests?limit=1` })).json();
+    const response = await app.inject({ method: 'GET', url: `/api/requests/${list.requests[0].id}` });
+    const row = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(row.body).toBe(payload);
+    expect(row.bodyEncoding).toBe('utf8');
+    expect(row.headers['x-signature']).toBe('sig');
+    expect(row.path).toBe(`/i/${slug}/detail`);
+  });
+
+  it('base64 encodes a binary body and round trips it', async () => {
+    const payload = Buffer.from([0x00, 0xff, 0x1f, 0x80]);
+    await app.inject({
+      method: 'POST',
+      url: `/i/${slug}/binary`,
+      headers: { 'content-type': 'application/octet-stream' },
+      payload,
+    });
+
+    const list = (await app.inject({ method: 'GET', url: `/api/bins/${slug}/requests?limit=1` })).json();
+    const row = (await app.inject({ method: 'GET', url: `/api/requests/${list.requests[0].id}` })).json();
+
+    expect(row.bodyEncoding).toBe('base64');
+    expect(Buffer.from(row.body, 'base64').equals(payload)).toBe(true);
+  });
+
+  it('returns 404 for an id that does not exist', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/requests/3f3d4c8a-6a0e-4a4a-9a1f-0f2c1d9b7e55',
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('returns 400 for an id that is not a uuid', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/requests/not-a-uuid' });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe('invalid_id');
+  });
+});
