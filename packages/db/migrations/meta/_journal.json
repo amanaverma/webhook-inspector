@@ -15,6 +15,13 @@
       "when": 1788459913411,
       "tag": "0001_silky_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788549305483,
+      "tag": "0002_futuristic_purifiers",
+      "breakpoints": true
     }
   ]
 }

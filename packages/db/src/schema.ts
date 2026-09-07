@@ -43,7 +43,7 @@ export const requests = pgTable(
     sourceIp: inet('source_ip'),
     receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index('requests_bin_received_idx').on(table.binId, table.receivedAt.desc(), sql`id desc`)],
+  (table) => [index('requests_bin_received_idx').on(table.binId, sql`received_at desc`, sql`id desc`)],
 );
 
 export type Bin = typeof bins.$inferSelect;
