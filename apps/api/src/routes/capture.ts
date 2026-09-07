@@ -1,6 +1,7 @@
 import { bins, requests, type Db } from '@wi/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest, HTTPMethods } from 'fastify';
+import { notifyNewRequest } from '../notify.js';
 
 const METHODS: HTTPMethods[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 
@@ -94,6 +95,8 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db): void {
           sourceIp: request.ip,
         })
         .returning({ id: requests.id, receivedAt: requests.receivedAt });
+
+      await notifyNewRequest(db, { binId: bin.id, requestId: row!.id });
 
       if (body.truncated) {
         return reply.code(413).send({
