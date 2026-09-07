@@ -8,6 +8,13 @@
       "when": 1788201157831,
       "tag": "0000_cooing_hex",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788459913411,
+      "tag": "0001_silky_guardian",
+      "breakpoints": true
     }
   ]
 }
