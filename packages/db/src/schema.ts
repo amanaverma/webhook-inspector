@@ -22,12 +22,35 @@ const bytea = customType<{ data: Buffer; driverData: Buffer }>({
  */
 export type DeliveryState = 'pending' | 'sending' | 'sent' | 'failed' | 'dead';
 
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  email: text('email').notNull().unique(),
+  passwordHash: text('password_hash').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const sessions = pgTable(
+  'sessions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** SHA-256 of the cookie value, so a database leak does not hand over live sessions. */
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('sessions_user_idx').on(table.userId)],
+);
+
 export const bins = pgTable('bins', {
   id: uuid('id').primaryKey().defaultRandom(),
   slug: text('slug').notNull().unique(),
   name: text('name').notNull(),
   forwardUrl: text('forward_url'),
   isActive: boolean('is_active').notNull().default(true),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -76,6 +99,8 @@ export const deliveries = pgTable(
   ],
 );
 
+export type User = typeof users.$inferSelect;
+export type Session = typeof sessions.$inferSelect;
 export type Bin = typeof bins.$inferSelect;
 export type NewBin = typeof bins.$inferInsert;
 export type Request = typeof requests.$inferSelect;
