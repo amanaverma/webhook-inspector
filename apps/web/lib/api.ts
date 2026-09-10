@@ -19,10 +19,23 @@ export type RequestSummary = {
   receivedAt: string;
 };
 
+export type Delivery = {
+  id: string;
+  attempt: number;
+  state: 'pending' | 'sending' | 'sent' | 'failed' | 'dead';
+  targetUrl: string;
+  responseStatus: number | null;
+  durationMs: number | null;
+  error: string | null;
+  nextAttemptAt: string;
+  createdAt: string;
+};
+
 export type RequestDetail = RequestSummary & {
   headers: Record<string, string>;
   body: string;
   bodyEncoding: 'utf8' | 'base64';
+  deliveries: Delivery[];
 };
 
 const base = process.env.API_BASE_URL ?? 'http://localhost:3000';
