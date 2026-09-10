@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { registerBinRoutes } from './routes/bins.js';
 import { registerCaptureRoutes } from './routes/capture.js';
 import { registerReadRoutes } from './routes/read.js';
+import { registerStreamRoutes } from './routes/stream.js';
 
 /**
  * Builds the Fastify instance with every route registered.
@@ -10,13 +11,14 @@ import { registerReadRoutes } from './routes/read.js';
  * The returned server is not listening. Call `listen` on it, or pass it to
  * `inject` in a test to exercise routes without opening a port.
  */
-export function buildApp(db: Db): FastifyInstance {
+export function buildApp(db: Db, databaseUrl = process.env.DATABASE_URL ?? ''): FastifyInstance {
   const app = Fastify({ logger: false });
 
   app.get('/health', async () => ({ status: 'ok' }));
   registerBinRoutes(app, db);
   registerCaptureRoutes(app, db);
   registerReadRoutes(app, db);
+  registerStreamRoutes(app, db, databaseUrl);
 
   return app;
 }

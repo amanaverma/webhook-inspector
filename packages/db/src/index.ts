@@ -14,4 +14,17 @@ export function createDb(url: string) {
 
 export type Db = ReturnType<typeof createDb>;
 
+/**
+ * Opens a connection dedicated to LISTEN.
+ *
+ * Postgres holds a listening connection open for the life of the subscription,
+ * so this must not share the pool the rest of the application queries through.
+ * Close it with `client.end()`.
+ */
+export function createListenClient(url: string) {
+  return postgres(url, { max: 1 });
+}
+
+export type ListenClient = ReturnType<typeof createListenClient>;
+
 export * from './schema.js';
