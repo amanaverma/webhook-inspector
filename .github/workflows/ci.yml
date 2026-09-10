@@ -49,3 +49,9 @@ jobs:
 
       - name: Test
         run: npm test -w @wi/api
+
+      - name: Lint web
+        run: npm run lint -w @wi/web
+
+      - name: Build web
+        run: npm run build -w @wi/web
