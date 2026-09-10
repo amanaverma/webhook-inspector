@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation';
 import { getBin, getRequest, listRequests } from '@/lib/api';
 import { CaptureUrl } from './capture-url';
+import { ForwardUrl } from './forward-url';
 import { LiveTail } from './live-tail';
 import { RequestDetailPane } from './request-detail';
 import { RequestList } from './request-list';
@@ -29,6 +30,7 @@ export default async function BinPage({ params, searchParams }: Props) {
       <header className="flex flex-col gap-2">
         <h1 className="text-xl font-semibold tracking-tight">{bin.name}</h1>
         <CaptureUrl slug={bin.slug} />
+        <ForwardUrl slug={bin.slug} current={bin.forwardUrl} />
         <div className="flex items-center gap-3">
           <p className="text-sm text-slate-500">
             {bin.requestCount} {bin.requestCount === 1 ? 'request' : 'requests'} captured
