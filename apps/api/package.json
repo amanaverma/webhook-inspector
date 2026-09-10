@@ -7,7 +7,9 @@
     "dev": "node --env-file=../../.env --import tsx --watch src/index.ts",
     "build": "tsc --build",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "worker": "node --env-file=../../.env dist/worker-main.js",
+    "worker:dev": "node --env-file=../../.env --import tsx --watch src/worker-main.ts"
   },
   "devDependencies": {
     "dotenv": "^17.4.2",
