@@ -1,3 +1,4 @@
+import { headers } from 'next/headers';
 import { notFound } from 'next/navigation';
 import { getBin, getRequest, listRequests } from '@/lib/api';
 import { CaptureUrl } from './capture-url';
@@ -7,6 +8,22 @@ import { RequestDetailPane } from './request-detail';
 import { RequestList } from './request-list';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * Returns the origin a provider should post to.
+ *
+ * Falls back to the host serving this page, which is correct in development and
+ * wherever the capture path is proxied through the web app. Set
+ * `CAPTURE_ORIGIN` when the API answers on its own hostname.
+ */
+async function captureOrigin(): Promise<string> {
+  if (process.env.CAPTURE_ORIGIN) return process.env.CAPTURE_ORIGIN;
+
+  const store = await headers();
+  const host = store.get('x-forwarded-host') ?? store.get('host') ?? 'localhost:3001';
+  const protocol = store.get('x-forwarded-proto') ?? (host.startsWith('localhost') ? 'http' : 'https');
+  return `${protocol}://${host}`;
+}
 
 type Props = {
   params: Promise<{ slug: string }>;
@@ -20,6 +37,8 @@ export default async function BinPage({ params, searchParams }: Props) {
   const bin = await getBin(slug);
   if (!bin) notFound();
 
+  const captureUrl = `${await captureOrigin()}/i/${bin.slug}`;
+
   const [page, selected] = await Promise.all([
     listRequests(slug),
     selectedId ? getRequest(selectedId) : Promise.resolve(null),
@@ -29,7 +48,7 @@ export default async function BinPage({ params, searchParams }: Props) {
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-2">
         <h1 className="text-xl font-semibold tracking-tight">{bin.name}</h1>
-        <CaptureUrl slug={bin.slug} />
+        <CaptureUrl url={captureUrl} />
         <ForwardUrl slug={bin.slug} current={bin.forwardUrl} />
         <div className="flex items-center gap-3">
           <p className="text-sm text-slate-500">

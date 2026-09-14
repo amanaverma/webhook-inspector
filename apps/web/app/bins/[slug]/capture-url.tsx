@@ -2,9 +2,8 @@
 
 import { useState } from 'react';
 
-export function CaptureUrl({ slug }: { slug: string }) {
+export function CaptureUrl({ url }: { url: string }) {
   const [copied, setCopied] = useState(false);
-  const url = typeof window === 'undefined' ? `/i/${slug}` : `${window.location.origin}/i/${slug}`;
 
   async function copy() {
     await navigator.clipboard.writeText(url);
