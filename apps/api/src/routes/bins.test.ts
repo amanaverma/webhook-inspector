@@ -3,12 +3,16 @@ import { eq } from 'drizzle-orm';
 import type { LightMyRequestResponse } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
+import { signedInCookie } from '../test-auth.js';
 
 const db = createDb(process.env.DATABASE_URL!);
 const app = buildApp(db);
+
+let cookie: string;
 const created: string[] = [];
 
 beforeAll(async () => {
+  cookie = await signedInCookie(app);
   await app.ready();
 });
 
@@ -20,7 +24,7 @@ afterAll(async () => {
 });
 
 async function post(body: Record<string, unknown>): Promise<LightMyRequestResponse> {
-  const response = await app.inject({ method: 'POST', url: '/api/bins', payload: body });
+  const response = await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: body });
   if (response.statusCode === 201) {
     created.push(response.json().id);
   }

@@ -1,9 +1,10 @@
 import { bins, deliveries, requests, type Db } from '@wi/db';
-import { and, asc, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, lt, or, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { loadOwnedBin } from '../auth/ownership.js';
 import { enqueueReplay } from '../delivery/queue.js';
+import { checkTargetUrl } from '../delivery/target-url.js';
 import { encodeBody } from './body-encoding.js';
 import { decodeCursor, encodeCursor } from './cursor.js';
 
@@ -28,9 +29,15 @@ const listQuery = z.object({
  * fetched. `nextCursor` is null on the last page.
  */
 export function registerReadRoutes(app: FastifyInstance, db: Db): void {
-  app.get('/api/bins', async (request) => {
-    const visible = request.user ? eq(bins.userId, request.user.id) : isNull(bins.userId);
-    const rows = await db.select().from(bins).where(visible).orderBy(desc(bins.createdAt));
+  app.get('/api/bins', async (request, reply) => {
+    if (!request.user) return reply.code(401).send({ error: 'unauthenticated' });
+
+    const rows = await db
+      .select()
+      .from(bins)
+      .where(eq(bins.userId, request.user.id))
+      .orderBy(desc(bins.createdAt));
+
     return { bins: rows };
   });
 
@@ -126,6 +133,11 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
 
     const bin = await loadOwnedBin(db, slug, request.user);
     if (!bin) return reply.code(404).send({ error: 'not_found' });
+
+    if (parsed.data.forwardUrl) {
+      const target = await checkTargetUrl(parsed.data.forwardUrl);
+      if (!target.ok) return reply.code(400).send({ error: 'invalid_forward_url', reason: target.reason });
+    }
 
     const [updated] = await db
       .update(bins)
