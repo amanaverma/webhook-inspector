@@ -1,6 +1,7 @@
 import { bins, createListenClient, requests, type Db } from '@wi/db';
 import { and, asc, eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
+import { loadOwnedBin } from '../auth/ownership.js';
 import { CHANNEL, parseNotice } from '../notify.js';
 
 const HEARTBEAT_MS = 15_000;
@@ -50,7 +51,7 @@ export function registerStreamRoutes(app: FastifyInstance, db: Db, databaseUrl: 
     scope.get('/api/bins/:slug/stream', async (request, reply) => {
       const { slug } = request.params as { slug: string };
 
-      const [bin] = await db.select({ id: bins.id }).from(bins).where(eq(bins.slug, slug)).limit(1);
+      const bin = await loadOwnedBin(db, slug, request.user);
       if (!bin) return reply.code(404).send({ error: 'not_found' });
 
       reply.raw.writeHead(200, {

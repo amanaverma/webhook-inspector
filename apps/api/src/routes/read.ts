@@ -1,7 +1,8 @@
 import { bins, deliveries, requests, type Db } from '@wi/db';
-import { and, asc, desc, eq, lt, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { loadOwnedBin } from '../auth/ownership.js';
 import { enqueueReplay } from '../delivery/queue.js';
 import { encodeBody } from './body-encoding.js';
 import { decodeCursor, encodeCursor } from './cursor.js';
@@ -27,15 +28,16 @@ const listQuery = z.object({
  * fetched. `nextCursor` is null on the last page.
  */
 export function registerReadRoutes(app: FastifyInstance, db: Db): void {
-  app.get('/api/bins', async () => {
-    const rows = await db.select().from(bins).orderBy(desc(bins.createdAt));
+  app.get('/api/bins', async (request) => {
+    const visible = request.user ? eq(bins.userId, request.user.id) : isNull(bins.userId);
+    const rows = await db.select().from(bins).where(visible).orderBy(desc(bins.createdAt));
     return { bins: rows };
   });
 
   app.get('/api/bins/:slug', async (request, reply) => {
     const { slug } = request.params as { slug: string };
 
-    const [bin] = await db.select().from(bins).where(eq(bins.slug, slug)).limit(1);
+    const bin = await loadOwnedBin(db, slug, request.user);
     if (!bin) return reply.code(404).send({ error: 'not_found' });
 
     const [counted] = await db
@@ -54,7 +56,7 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
       return reply.code(400).send({ error: 'invalid_query', details: z.treeifyError(parsed.error) });
     }
 
-    const [bin] = await db.select({ id: bins.id }).from(bins).where(eq(bins.slug, slug)).limit(1);
+    const bin = await loadOwnedBin(db, slug, request.user);
     if (!bin) return reply.code(404).send({ error: 'not_found' });
 
     let after = undefined;
@@ -100,6 +102,10 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
     const [row] = await db.select().from(requests).where(eq(requests.id, id)).limit(1);
     if (!row) return reply.code(404).send({ error: 'not_found' });
 
+    const [owner] = await db.select({ slug: bins.slug }).from(bins).where(eq(bins.id, row.binId)).limit(1);
+    const bin = await loadOwnedBin(db, owner!.slug, request.user);
+    if (!bin) return reply.code(404).send({ error: 'not_found' });
+
     const { body, ...rest } = row;
     const attempts = await db
       .select()
@@ -118,13 +124,15 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
       return reply.code(400).send({ error: 'invalid_body', details: z.treeifyError(parsed.error) });
     }
 
+    const bin = await loadOwnedBin(db, slug, request.user);
+    if (!bin) return reply.code(404).send({ error: 'not_found' });
+
     const [updated] = await db
       .update(bins)
       .set(parsed.data)
-      .where(eq(bins.slug, slug))
+      .where(eq(bins.id, bin.id))
       .returning();
 
-    if (!updated) return reply.code(404).send({ error: 'not_found' });
     return updated;
   });
 
@@ -133,13 +141,16 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
     if (!UUID.test(id)) return reply.code(400).send({ error: 'invalid_id' });
 
     const [row] = await db
-      .select({ binId: requests.binId, forwardUrl: bins.forwardUrl })
+      .select({ slug: bins.slug, forwardUrl: bins.forwardUrl })
       .from(requests)
       .innerJoin(bins, eq(bins.id, requests.binId))
       .where(eq(requests.id, id))
       .limit(1);
 
     if (!row) return reply.code(404).send({ error: 'not_found' });
+
+    const bin = await loadOwnedBin(db, row.slug, request.user);
+    if (!bin) return reply.code(404).send({ error: 'not_found' });
     if (!row.forwardUrl) return reply.code(409).send({ error: 'no_forward_url' });
 
     return reply.code(202).send(await enqueueReplay(db, id, row.forwardUrl));

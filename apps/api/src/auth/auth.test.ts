@@ -101,26 +101,33 @@ describe('bin ownership', () => {
     expect(slugs).not.toContain(aliceSlug);
   });
 
-  it('refuses reads of another user bin', async () => {
+  it('answers reads of another user bin as if it did not exist', async () => {
     for (const url of [`/api/bins/${aliceSlug}`, `/api/bins/${aliceSlug}/requests`]) {
       const response = await app.inject({ method: 'GET', url, headers: { cookie: bobCookie } });
-      expect(response.statusCode, url).toBe(403);
+      expect(response.statusCode, url).toBe(404);
+      expect(response.json(), url).toEqual({ error: 'not_found' });
     }
   });
 
-  it('refuses writes to another user bin', async () => {
+  it('answers writes to another user bin as if it did not exist', async () => {
     const response = await app.inject({
       method: 'PATCH',
       url: `/api/bins/${aliceSlug}`,
       headers: { cookie: bobCookie },
       payload: { name: 'stolen' },
     });
-    expect(response.statusCode).toBe(403);
+    expect(response.statusCode).toBe(404);
   });
 
-  it('asks an anonymous caller to sign in', async () => {
+  it('answers an anonymous caller as if the bin did not exist', async () => {
     const response = await app.inject({ method: 'GET', url: `/api/bins/${aliceSlug}` });
-    expect(response.statusCode).toBe(401);
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('gives the same answer for another user bin and a missing one', async () => {
+    const theirs = await app.inject({ method: 'GET', url: `/api/bins/${aliceSlug}`, headers: { cookie: bobCookie } });
+    const missing = await app.inject({ method: 'GET', url: '/api/bins/zzzzzzzzzz', headers: { cookie: bobCookie } });
+    expect([theirs.statusCode, theirs.body]).toEqual([missing.statusCode, missing.body]);
   });
 
   it('lets the owner through', async () => {
