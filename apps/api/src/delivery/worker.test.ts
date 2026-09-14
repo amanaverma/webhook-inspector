@@ -1,13 +1,16 @@
 import { createServer, type Server } from 'node:http';
 import { bins, createDb, deliveries, requests } from '@wi/db';
 import { asc, eq } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
 import { claimDue, enqueue } from './queue.js';
 import { runOnce } from './worker.js';
+import { signedInCookie } from '../test-auth.js';
 
 const db = createDb(process.env.DATABASE_URL!);
 const app = buildApp(db);
+
+let cookie: string;
 
 type Hit = { method: string; url: string; headers: Record<string, string | string[] | undefined>; body: Buffer };
 
@@ -18,6 +21,7 @@ let respond: (hit: Hit) => { status: number; delayMs?: number } = () => ({ statu
 let slug: string;
 
 beforeAll(async () => {
+  cookie = await signedInCookie(app);
   await app.ready();
 
   server = createServer((req, res) => {
@@ -38,8 +42,8 @@ beforeAll(async () => {
   const address = server.address();
   target = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}/hook`;
 
-  slug = (await app.inject({ method: 'POST', url: '/api/bins', payload: { name: 'Delivery' } })).json().slug;
-  await app.inject({ method: 'PATCH', url: `/api/bins/${slug}`, payload: { forwardUrl: target } });
+  slug = (await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'Delivery' } })).json().slug;
+  await app.inject({ headers: { cookie }, method: 'PATCH', url: `/api/bins/${slug}`, payload: { forwardUrl: target } });
 });
 
 afterAll(async () => {
@@ -168,7 +172,7 @@ describe('delivery worker', () => {
     await runOnce(db);
 
     hits = [];
-    const replay = await app.inject({ method: 'POST', url: `/api/requests/${id}/replay` });
+    const replay = await app.inject({ headers: { cookie }, method: 'POST', url: `/api/requests/${id}/replay` });
     expect(replay.statusCode).toBe(202);
 
     await runOnce(db);
@@ -177,10 +181,10 @@ describe('delivery worker', () => {
   });
 
   it('refuses to replay when the bin has no forward URL', async () => {
-    const plain = (await app.inject({ method: 'POST', url: '/api/bins', payload: { name: 'No target' } })).json();
+    const plain = (await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'No target' } })).json();
     const captured = (await app.inject({ method: 'POST', url: `/i/${plain.slug}/x`, payload: 'x' })).json();
 
-    const response = await app.inject({ method: 'POST', url: `/api/requests/${captured.id}/replay` });
+    const response = await app.inject({ headers: { cookie }, method: 'POST', url: `/api/requests/${captured.id}/replay` });
     expect(response.statusCode).toBe(409);
 
     await db.delete(bins).where(eq(bins.id, plain.id));
@@ -191,7 +195,7 @@ describe('delivery worker', () => {
     const id = await capture('/history', 'x', 'text/plain');
     await runOnce(db);
 
-    const detail = (await app.inject({ method: 'GET', url: `/api/requests/${id}` })).json();
+    const detail = (await app.inject({ headers: { cookie }, method: 'GET', url: `/api/requests/${id}` })).json();
     expect(detail.deliveries).toHaveLength(1);
     expect(detail.deliveries[0].state).toBe('sent');
   });
@@ -228,5 +232,27 @@ describe('worker crash recovery', () => {
     const attempts = await attemptsFor(id);
     expect(attempts).toHaveLength(1);
     expect(attempts[0]!.state).toBe('sent');
+  });
+});
+
+describe('blocked targets', () => {
+  const allowPrivate = process.env.FORWARD_ALLOW_PRIVATE;
+  beforeEach(() => delete process.env.FORWARD_ALLOW_PRIVATE);
+  afterEach(() => {
+    if (allowPrivate !== undefined) process.env.FORWARD_ALLOW_PRIVATE = allowPrivate;
+  });
+
+  it('refuses to call a private address and does not retry', async () => {
+    respond = () => ({ status: 200 });
+    const id = await capture('/blocked', 'x', 'text/plain');
+    hits = [];
+
+    await runOnce(db);
+
+    const attempts = await attemptsFor(id);
+    expect(hits).toHaveLength(0);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]!.state).toBe('dead');
+    expect(attempts[0]!.error).toContain('blocked target');
   });
 });

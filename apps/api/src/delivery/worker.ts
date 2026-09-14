@@ -1,5 +1,6 @@
 import type { Db } from '@wi/db';
 import { claimDue, recordAttempt, type Attempt, type ClaimedDelivery } from './queue.js';
+import { checkTargetUrl } from './target-url.js';
 
 const TIMEOUT_MS = 10_000;
 const BATCH = 10;
@@ -20,6 +21,10 @@ const SKIP_HEADERS = new Set([
  *
  * Returns the response status, or a null status with the error text when the
  * target could not be reached or did not answer within the timeout.
+ *
+ * The target is checked again here rather than trusting the row, because a row
+ * may predate the check, and because a hostname can resolve to a private
+ * address only at the moment it is called.
  */
 export async function deliver(claimed: ClaimedDelivery): Promise<Attempt> {
   const headers: Record<string, string> = {};
@@ -28,6 +33,11 @@ export async function deliver(claimed: ClaimedDelivery): Promise<Attempt> {
   }
   headers['x-webhook-inspector-attempt'] = String(claimed.attempt);
   headers['x-webhook-inspector-request-id'] = claimed.requestId;
+
+  const target = await checkTargetUrl(claimed.targetUrl);
+  if (!target.ok) {
+    return { status: null, durationMs: 0, error: `blocked target: ${target.reason}`, terminal: true };
+  }
 
   const started = Date.now();
   try {

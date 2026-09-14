@@ -9,6 +9,8 @@ export type Attempt = {
   status: number | null;
   durationMs: number;
   error: string | null;
+  /** Set when the failure cannot improve on a later attempt, such as a refused target. */
+  terminal?: boolean;
 };
 
 /**
@@ -100,7 +102,8 @@ export async function claimDue(db: Db, limit: number): Promise<ClaimedDelivery[]
  */
 export async function recordAttempt(db: Db, claimed: ClaimedDelivery, attempt: Attempt): Promise<void> {
   const succeeded = attempt.status !== null && attempt.status >= 200 && attempt.status < 400;
-  const canRetry = !succeeded && isRetryable(attempt.status) && claimed.attempt < MAX_ATTEMPTS;
+  const canRetry =
+    !succeeded && !attempt.terminal && isRetryable(attempt.status) && claimed.attempt < MAX_ATTEMPTS;
 
   await db.transaction(async (tx) => {
     await tx.execute(sql`
