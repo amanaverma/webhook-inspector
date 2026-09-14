@@ -16,7 +16,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
     throw new Error(`PORT must be an integer between 1 and 65535, got ${env.PORT}`);
   }
 
-  return { databaseUrl, port, host: env.HOST ?? '0.0.0.0' } as const;
+  const retentionDays = Number(env.RETENTION_DAYS ?? 7);
+  if (!Number.isInteger(retentionDays) || retentionDays < 1) {
+    throw new Error(`RETENTION_DAYS must be a positive integer, got ${env.RETENTION_DAYS}`);
+  }
+
+  return {
+    databaseUrl,
+    port,
+    host: env.HOST ?? '0.0.0.0',
+    redisUrl: env.REDIS_URL ?? null,
+    retentionDays,
+  } as const;
 }
 
 export type Config = ReturnType<typeof loadConfig>;
