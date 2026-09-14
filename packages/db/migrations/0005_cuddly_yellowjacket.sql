@@ -1,0 +1,1 @@
+CREATE INDEX "bins_user_idx" ON "bins" USING btree ("user_id","created_at" DESC NULLS LAST);

@@ -44,15 +44,19 @@ export const sessions = pgTable(
   (table) => [index('sessions_user_idx').on(table.userId)],
 );
 
-export const bins = pgTable('bins', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  slug: text('slug').notNull().unique(),
-  name: text('name').notNull(),
-  forwardUrl: text('forward_url'),
-  isActive: boolean('is_active').notNull().default(true),
-  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const bins = pgTable(
+  'bins',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    slug: text('slug').notNull().unique(),
+    name: text('name').notNull(),
+    forwardUrl: text('forward_url'),
+    isActive: boolean('is_active').notNull().default(true),
+    userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('bins_user_idx').on(table.userId, table.createdAt.desc())],
+);
 
 export const requests = pgTable(
   'requests',
