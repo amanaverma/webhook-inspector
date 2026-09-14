@@ -1,5 +1,5 @@
-import { bins, createDb } from '@wi/db';
-import { eq } from 'drizzle-orm';
+import { bins, createDb, requests } from '@wi/db';
+import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
 import { signedInCookie } from '../test-auth.js';
@@ -114,6 +114,36 @@ describe('GET /api/bins/:slug/requests', () => {
     const response = await app.inject({ headers: { cookie }, method: 'GET', url: `/api/bins/${slug}/requests?limit=500` });
     expect(response.statusCode).toBe(400);
     expect(response.json().error).toBe('invalid_query');
+  });
+
+  it('returns every request when many share a millisecond', async () => {
+    const [bin] = await db.select({ id: bins.id }).from(bins).where(eq(bins.slug, slug));
+    const base = new Date('2026-01-01T00:00:00.123Z');
+
+    await db.execute(sql`
+      insert into requests (bin_id, method, path, query, headers, body, body_size, received_at)
+      select ${bin!.id}::uuid, 'POST', '/i/${sql.raw(slug)}/same-ms' || g, '{}'::jsonb, '{}'::jsonb,
+             decode('7b7d','hex'), 2,
+             ${base.toISOString()}::timestamptz + (g || ' microseconds')::interval
+      from generate_series(1, 10) g
+    `);
+
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+
+    do {
+      const url: string = `/api/bins/${slug}/requests?limit=3${cursor ? `&cursor=${cursor}` : ''}`;
+      const body = (await app.inject({ method: 'GET', url, headers: { cookie } })).json() as Page;
+      for (const row of body.requests) seen.add(row.id);
+      cursor = body.nextCursor;
+    } while (cursor);
+
+    const [counted] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(requests)
+      .where(eq(requests.binId, bin!.id));
+
+    expect(seen.size).toBe(counted!.count);
   });
 
   it('rejects a cursor it did not issue', async () => {

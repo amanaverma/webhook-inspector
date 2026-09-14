@@ -1,5 +1,5 @@
 import { bins, deliveries, requests, type Db } from '@wi/db';
-import { and, asc, desc, eq, lt, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { loadOwnedBin } from '../auth/ownership.js';
@@ -68,12 +68,12 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
 
     let after = undefined;
     if (parsed.data.cursor !== undefined) {
-      const cursor = decodeCursor(parsed.data.cursor);
-      if (!cursor) return reply.code(400).send({ error: 'invalid_cursor' });
-      after = or(
-        lt(requests.receivedAt, cursor.receivedAt),
-        and(eq(requests.receivedAt, cursor.receivedAt), lt(requests.id, cursor.id)),
-      );
+      const cursorId = decodeCursor(parsed.data.cursor);
+      if (!cursorId) return reply.code(400).send({ error: 'invalid_cursor' });
+
+      // Compared in SQL so the microseconds in received_at survive, which a
+      // JavaScript Date would truncate.
+      after = sql`(${requests.receivedAt}, ${requests.id}) < (select received_at, id from ${requests} where id = ${cursorId}::uuid)`;
     }
 
     const rows = await db
