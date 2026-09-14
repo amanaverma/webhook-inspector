@@ -24,12 +24,21 @@ type Subscriber = (requestId: string) => void;
 export function registerStreamRoutes(app: FastifyInstance, db: Db, databaseUrl: string): void {
   void app.register(async (scope) => {
     const subscribers = new Map<string, Set<Subscriber>>();
+    const open = new Set<{ end: () => void }>();
     const listener = createListenClient(databaseUrl);
 
     await listener.listen(CHANNEL, (payload) => {
       const notice = parseNotice(payload);
       if (!notice) return;
       for (const send of subscribers.get(notice.binId) ?? []) send(notice.requestId);
+    });
+
+    // Ends every stream before the server stops accepting connections, since an
+    // event stream is never idle and would otherwise hold shutdown open until
+    // the platform kills the process.
+    scope.addHook('preClose', async () => {
+      for (const stream of open) stream.end();
+      open.clear();
     });
 
     scope.addHook('onClose', async () => {
@@ -95,8 +104,16 @@ export function registerStreamRoutes(app: FastifyInstance, db: Db, databaseUrl: 
           .limit(1)
           .then(([row]) => {
             if (row) sendRow(row);
+          })
+          .catch((error: unknown) => {
+            // One stream failing to read a row must not reject into the process,
+            // which would end every other stream with it.
+            request.log.error({ err: error, requestId }, 'live tail could not read a request');
           });
       };
+
+      const entry = { end: () => reply.raw.end() };
+      open.add(entry);
 
       const watchers = subscribers.get(bin.id) ?? new Set<Subscriber>();
       watchers.add(send);
@@ -106,6 +123,7 @@ export function registerStreamRoutes(app: FastifyInstance, db: Db, databaseUrl: 
 
       request.raw.on('close', () => {
         clearInterval(heartbeat);
+        open.delete(entry);
         watchers.delete(send);
         if (watchers.size === 0) subscribers.delete(bin.id);
       });
