@@ -3,8 +3,9 @@ import { bins, createDb, deliveries, requests } from '@wi/db';
 import { asc, eq } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
+import { MAX_BODY_BYTES } from '../routes/capture.js';
 import { claimDue, enqueue } from './queue.js';
-import { runOnce } from './worker.js';
+import { deliveryUrl, runOnce } from './worker.js';
 import { signedInCookie } from '../test-auth.js';
 
 const db = createDb(process.env.DATABASE_URL!);
@@ -254,5 +255,73 @@ describe('blocked targets', () => {
     expect(attempts).toHaveLength(1);
     expect(attempts[0]!.state).toBe('dead');
     expect(attempts[0]!.error).toContain('blocked target');
+  });
+});
+
+describe('deliveryUrl', () => {
+  const base = {
+    id: 'd', requestId: 'r', attempt: 1, method: 'POST',
+    headers: {}, body: Buffer.alloc(0), slug: 'abc123',
+  };
+
+  it('appends the path below the slug and keeps the query', () => {
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook', path: '/i/abc123/events/v2', query: { sig: 'x' } }))
+      .toBe('https://example.com/hook/events/v2?sig=x');
+  });
+
+  it('leaves a bare capture path alone', () => {
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook', path: '/i/abc123', query: {} }))
+      .toBe('https://example.com/hook');
+  });
+
+  it('does not double the slash when the target ends in one', () => {
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook/', path: '/i/abc123/x', query: {} }))
+      .toBe('https://example.com/hook/x');
+  });
+
+  it('keeps the target own query parameter when both carry the same name', () => {
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook?env=prod', path: '/i/abc123', query: { env: 'spoofed' } }))
+      .toBe('https://example.com/hook?env=prod');
+  });
+});
+
+describe('forwarding fidelity', () => {
+  it('sends the path and query the provider used', async () => {
+    respond = () => ({ status: 200 });
+    hits = [];
+    await app.inject({
+      method: 'POST',
+      url: `/i/${slug}/webhooks/stripe?attempt=2&sig=abc`,
+      headers: { 'content-type': 'application/json' },
+      payload: '{"n":1}',
+    });
+
+    await runOnce(db);
+
+    expect(hits).toHaveLength(1);
+
+    // Parsed rather than compared as a string, since the stored query is jsonb
+    // and carries no order.
+    const delivered = new URL(hits[0]!.url, 'http://target.invalid');
+    expect(delivered.pathname).toBe('/hook/webhooks/stripe');
+    expect(Object.fromEntries(delivered.searchParams)).toEqual({ attempt: '2', sig: 'abc' });
+  });
+
+  it('does not forward a truncated body', async () => {
+    respond = () => ({ status: 200 });
+    hits = [];
+    const oversized = Buffer.alloc(MAX_BODY_BYTES + 1024, 'z');
+    const response = await app.inject({
+      method: 'POST',
+      url: `/i/${slug}/too-big`,
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: oversized,
+    });
+
+    await runOnce(db);
+
+    expect(response.statusCode).toBe(413);
+    expect(hits).toHaveLength(0);
+    expect(await attemptsFor(response.json().id)).toHaveLength(0);
   });
 });

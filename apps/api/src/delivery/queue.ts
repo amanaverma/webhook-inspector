@@ -1,4 +1,7 @@
-import { deliveries, requests, type Db, type Delivery } from '@wi/db';
+import { bins, deliveries, requests, type Db, type Delivery } from '@wi/db';
+
+/** The transaction handle Drizzle passes to a `db.transaction` callback. */
+type Transaction = Parameters<Parameters<Db['transaction']>[0]>[0];
 import { sql } from 'drizzle-orm';
 import { backoffMs, isRetryable, MAX_ATTEMPTS } from './backoff.js';
 
@@ -20,7 +23,7 @@ export type Attempt = {
  * retried by the caller, or replayed after a crash, deliver once rather than
  * twice.
  */
-export async function enqueue(db: Db, requestId: string, targetUrl: string): Promise<void> {
+export async function enqueue(db: Db | Transaction, requestId: string, targetUrl: string): Promise<void> {
   await db
     .insert(deliveries)
     .values({ requestId, targetUrl, attempt: 1, dedupeKey: `${requestId}:1` })
@@ -53,6 +56,8 @@ export type ClaimedDelivery = {
   attempt: number;
   method: string;
   path: string;
+  query: Record<string, string | string[]>;
+  slug: string;
   headers: Record<string, string>;
   body: Buffer;
 };
@@ -84,10 +89,10 @@ export async function claimDue(db: Db, limit: number): Promise<ClaimedDelivery[]
     )
     update ${deliveries} d
     set state = 'sending', updated_at = now()
-    from due, ${requests} r
-    where d.id = due.id and r.id = d.request_id
+    from due, ${requests} r, ${bins} b
+    where d.id = due.id and r.id = d.request_id and b.id = r.bin_id
     returning d.id, d.request_id as "requestId", d.target_url as "targetUrl", d.attempt,
-              r.method, r.path, r.headers, r.body
+              r.method, r.path, r.query, r.headers, r.body, b.slug
   `);
 
   return rows as unknown as ClaimedDelivery[];

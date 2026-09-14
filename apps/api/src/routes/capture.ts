@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest, HTTPMethods } from 'fastify';
 import type { Redis } from 'ioredis';
 import { enqueue } from '../delivery/queue.js';
-import { spendToken } from '../rate-limit.js';
+import { CAPACITY, REFILL_PER_SECOND, spendToken } from '../rate-limit.js';
 import { notifyNewRequest } from '../notify.js';
 
 const METHODS: HTTPMethods[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
@@ -33,8 +33,9 @@ function flattenHeaders(request: FastifyRequest): Record<string, string> {
  *
  * Stores the request as it arrived, including the unparsed body, and answers
  * 200 once the row is written. A body over `MAX_BODY_BYTES` is stored up to
- * that limit with `truncated` set and answered 413. An unknown or inactive slug
- * gets a 404 and nothing is stored.
+ * that limit with `truncated` set and answered 413, and is never forwarded,
+ * since the target would receive something the provider did not send. An
+ * unknown or inactive slug gets a 404 and nothing is stored.
  *
  * Routes are registered inside their own plugin scope so that replacing the
  * body parser with one that keeps raw bytes does not affect the JSON parsing
@@ -67,6 +68,13 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis
     const handler = async (request: FastifyRequest, reply: FastifyReply) => {
       const { slug } = request.params as { slug: string };
 
+      // Spent before the lookup, so a flood against slugs that do not exist
+      // costs a Redis call rather than a database query each.
+      if (redis) {
+        const perClient = await spendToken(redis, `rl:ip:${request.ip}`, CAPACITY, REFILL_PER_SECOND);
+        if (!perClient.allowed) return reply.code(429).send({ error: 'rate_limited' });
+      }
+
       const [bin] = await db
         .select({ id: bins.id, forwardUrl: bins.forwardUrl })
         .from(bins)
@@ -91,34 +99,40 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis
         truncated: false,
       };
 
-      const [row] = await db
-        .insert(requests)
-        .values({
-          binId: bin.id,
-          method: request.method,
-          path: request.url.split('?')[0]!,
-          query: request.query as Record<string, string | string[]>,
-          headers: flattenHeaders(request),
-          body: body.bytes,
-          bodySize: body.size,
-          truncated: body.truncated,
-          contentType: request.headers['content-type'] ?? null,
-          sourceIp: request.ip,
-        })
-        .returning({ id: requests.id, receivedAt: requests.receivedAt });
+      // The row and its first delivery are written together, so a failure
+      // cannot leave a stored request that is never forwarded.
+      const row = await db.transaction(async (tx) => {
+        const [inserted] = await tx
+          .insert(requests)
+          .values({
+            binId: bin.id,
+            method: request.method,
+            path: request.url.split('?')[0]!,
+            query: request.query as Record<string, string | string[]>,
+            headers: flattenHeaders(request),
+            body: body.bytes,
+            bodySize: body.size,
+            truncated: body.truncated,
+            contentType: request.headers['content-type'] ?? null,
+            sourceIp: request.ip,
+          })
+          .returning({ id: requests.id, receivedAt: requests.receivedAt });
 
-      if (bin.forwardUrl) await enqueue(db, row!.id, bin.forwardUrl);
-      await notifyNewRequest(db, { binId: bin.id, requestId: row!.id });
+        if (bin.forwardUrl && !body.truncated) await enqueue(tx, inserted!.id, bin.forwardUrl);
+        return inserted!;
+      });
+
+      await notifyNewRequest(db, { binId: bin.id, requestId: row.id });
 
       if (body.truncated) {
         return reply.code(413).send({
           error: 'body_too_large',
           limit: MAX_BODY_BYTES,
-          id: row!.id,
+          id: row.id,
         });
       }
 
-      return reply.code(200).send({ id: row!.id, receivedAt: row!.receivedAt });
+      return reply.code(200).send({ id: row.id, receivedAt: row.receivedAt });
     };
 
     scope.route({ method: METHODS, url: '/i/:slug', handler });

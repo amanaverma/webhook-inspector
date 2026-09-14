@@ -17,6 +17,33 @@ const SKIP_HEADERS = new Set([
 ]);
 
 /**
+ * Builds the URL an attempt is sent to.
+ *
+ * Whatever the provider addressed below `/i/<slug>` is appended to the target's
+ * own path, and the captured query is merged in, with the target's own
+ * parameters winning. So a webhook sent to `/i/<slug>/events?sig=abc` with a
+ * target of `https://example.com/hook` is delivered to
+ * `https://example.com/hook/events?sig=abc`.
+ */
+export function deliveryUrl(claimed: ClaimedDelivery): string {
+  const url = new URL(claimed.targetUrl);
+  const suffix = claimed.path.replace(`/i/${claimed.slug}`, '');
+
+  if (suffix) {
+    url.pathname = `${url.pathname.replace(/\/$/, '')}${suffix}`;
+  }
+
+  for (const [key, value] of Object.entries(claimed.query ?? {})) {
+    if (url.searchParams.has(key)) continue;
+    for (const single of Array.isArray(value) ? value : [value]) {
+      url.searchParams.append(key, single);
+    }
+  }
+
+  return url.toString();
+}
+
+/**
  * Sends one claimed delivery to its target.
  *
  * Returns the response status, or a null status with the error text when the
@@ -41,7 +68,7 @@ export async function deliver(claimed: ClaimedDelivery): Promise<Attempt> {
 
   const started = Date.now();
   try {
-    const response = await fetch(claimed.targetUrl, {
+    const response = await fetch(deliveryUrl(claimed), {
       method: claimed.method,
       headers,
       signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -74,18 +101,26 @@ export async function runOnce(db: Db): Promise<number> {
 /**
  * Runs `runOnce` on an interval until the returned function is called.
  *
- * Ticks never overlap: a slow batch delays the next tick rather than running
- * beside it.
+ * Ticks never overlap, and a tick that arrives during a slow batch is skipped
+ * rather than queued behind it.
  */
 export function startWorker(db: Db, intervalMs = 1_000): () => Promise<void> {
   let stopped = false;
-  let running: Promise<unknown> = Promise.resolve();
+  let running: Promise<unknown> | null = null;
 
   const timer = setInterval(() => {
-    if (stopped) return;
-    running = running.then(() => (stopped ? undefined : runOnce(db))).catch((error) => {
-      console.error('delivery tick failed', error);
-    });
+    // A tick that arrives while the previous one is still working is dropped
+    // rather than queued, so slow targets cannot build a backlog of ticks that
+    // all run back to back once the targets recover.
+    if (stopped || running) return;
+
+    running = runOnce(db)
+      .catch((error: unknown) => {
+        console.error('delivery tick failed', error);
+      })
+      .finally(() => {
+        running = null;
+      });
   }, intervalMs);
 
   return async () => {
