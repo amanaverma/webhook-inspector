@@ -1,5 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { currentUser } from '@/lib/api';
+import { SignOut } from './sign-out';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -7,7 +9,9 @@ export const metadata: Metadata = {
   description: 'Capture, inspect and replay incoming webhooks',
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  const user = await currentUser();
+
   return (
     <html lang="en">
       <body className="min-h-screen bg-white text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100">
@@ -16,6 +20,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/" className="font-semibold tracking-tight">
               Webhook Inspector
             </Link>
+            {user ? (
+              <SignOut email={user.email} />
+            ) : (
+              <Link href="/login" className="text-sm font-medium underline">
+                Sign in
+              </Link>
+            )}
           </div>
         </header>
         <main className="mx-auto max-w-5xl px-4 py-8">{children}</main>

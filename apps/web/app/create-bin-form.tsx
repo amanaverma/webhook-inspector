@@ -16,6 +16,7 @@ export function CreateBinForm() {
 
     const response = await fetch('/api/bins', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: name.trim() || undefined }),
     });

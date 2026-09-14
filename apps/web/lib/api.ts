@@ -1,3 +1,5 @@
+import { cookies } from 'next/headers';
+
 export type Bin = {
   id: string;
   slug: string;
@@ -38,7 +40,16 @@ export type RequestDetail = RequestSummary & {
   deliveries: Delivery[];
 };
 
+export type User = { id: string; email: string };
+
 const base = process.env.API_BASE_URL ?? 'http://localhost:3000';
+
+/** Passes the browser's session cookie on, since server side fetch carries none of its own. */
+async function sessionHeaders(): Promise<Record<string, string>> {
+  const store = await cookies();
+  const header = store.toString();
+  return header ? { cookie: header } : {};
+}
 
 /**
  * Calls the API and parses the JSON response.
@@ -47,8 +58,8 @@ const base = process.env.API_BASE_URL ?? 'http://localhost:3000';
  * missing bin renders a not found page while a broken API surfaces as an error.
  */
 async function get<T>(path: string): Promise<T | null> {
-  const response = await fetch(`${base}${path}`, { cache: 'no-store' });
-  if (response.status === 404) return null;
+  const response = await fetch(`${base}${path}`, { cache: 'no-store', headers: await sessionHeaders() });
+  if (response.status === 401 || response.status === 403 || response.status === 404) return null;
   if (!response.ok) throw new Error(`${path} responded ${response.status}`);
   return (await response.json()) as T;
 }
@@ -72,12 +83,6 @@ export async function getRequest(id: string): Promise<RequestDetail | null> {
   return get<RequestDetail>(`/api/requests/${id}`);
 }
 
-export async function createBin(name: string): Promise<Bin> {
-  const response = await fetch(`${base}/api/bins`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
-  if (!response.ok) throw new Error(`create bin responded ${response.status}`);
-  return (await response.json()) as Bin;
+export async function currentUser(): Promise<User | null> {
+  return get<User>('/api/auth/me');
 }
