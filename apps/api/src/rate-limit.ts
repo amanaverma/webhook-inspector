@@ -3,9 +3,13 @@ import type { Redis } from 'ioredis';
 export const CAPACITY = 120;
 export const REFILL_PER_SECOND = 2;
 
-/** Login is far rarer than capture, so its bucket is small and refills slowly. */
+/** Login is far rarer than capture, so its buckets are small and refill slowly. */
 export const LOGIN_CAPACITY = 10;
 export const LOGIN_REFILL_PER_SECOND = 0.05;
+
+/** A single client may work through several accounts before it is stopped. */
+export const LOGIN_IP_CAPACITY = 40;
+export const LOGIN_IP_REFILL_PER_SECOND = 0.2;
 
 /**
  * Refills the bucket by elapsed time, spends one token, and reports the result.

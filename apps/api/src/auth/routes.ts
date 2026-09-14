@@ -4,7 +4,13 @@ import { eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { Redis } from 'ioredis';
 import { z } from 'zod';
-import { LOGIN_CAPACITY, LOGIN_REFILL_PER_SECOND, spendToken } from '../rate-limit.js';
+import {
+  LOGIN_CAPACITY,
+  LOGIN_IP_CAPACITY,
+  LOGIN_IP_REFILL_PER_SECOND,
+  LOGIN_REFILL_PER_SECOND,
+  spendToken,
+} from '../rate-limit.js';
 import {
   checkPassword,
   COOKIE_NAME,
@@ -62,9 +68,13 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, redis: Redis | 
 
     if (redis) {
       const email = parsed.data.email.toLowerCase();
+      // Keyed by address and client together, so guessing against one account is
+      // limited without letting an attacker lock its owner out by burning a
+      // bucket keyed on the address alone. The wider per client bucket bounds
+      // someone working through many addresses.
       const buckets = await Promise.all([
-        spendToken(redis, `rl:login:email:${email}`, LOGIN_CAPACITY, LOGIN_REFILL_PER_SECOND),
-        spendToken(redis, `rl:login:ip:${request.ip}`, LOGIN_CAPACITY, LOGIN_REFILL_PER_SECOND),
+        spendToken(redis, `rl:login:${request.ip}:${email}`, LOGIN_CAPACITY, LOGIN_REFILL_PER_SECOND),
+        spendToken(redis, `rl:login:ip:${request.ip}`, LOGIN_IP_CAPACITY, LOGIN_IP_REFILL_PER_SECOND),
       ]);
       if (buckets.some((bucket) => !bucket.allowed)) {
         return reply.code(429).send({ error: 'too_many_attempts' });

@@ -106,6 +106,53 @@ describe('operational endpoints', () => {
   });
 });
 
+describe('metrics access', () => {
+  const original = process.env.METRICS_TOKEN;
+  afterAll(() => {
+    if (original === undefined) delete process.env.METRICS_TOKEN;
+    else process.env.METRICS_TOKEN = original;
+  });
+
+  it('is open when no token is configured', async () => {
+    delete process.env.METRICS_TOKEN;
+    expect((await app.inject({ method: 'GET', url: '/metrics' })).statusCode).toBe(200);
+  });
+
+  it('requires the token once one is configured', async () => {
+    process.env.METRICS_TOKEN = 'secret-token';
+
+    expect((await app.inject({ method: 'GET', url: '/metrics' })).statusCode).toBe(401);
+    expect(
+      (await app.inject({ method: 'GET', url: '/metrics', headers: { authorization: 'Bearer wrong' } })).statusCode,
+    ).toBe(401);
+    expect(
+      (await app.inject({ method: 'GET', url: '/metrics', headers: { authorization: 'Bearer secret-token' } })).statusCode,
+    ).toBe(200);
+  });
+});
+
+describe('capture rate limiting by client', () => {
+  it('stops a flood aimed at slugs that do not exist', async () => {
+    const ip = '203.0.113.7';
+    await redis.del(`rl:ip:${ip}`);
+
+    const codes: number[] = [];
+    for (let i = 0; i < CAPACITY + 5; i++) {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/i/nosuchbin${i}`,
+        remoteAddress: ip,
+        payload: 'x',
+      });
+      codes.push(response.statusCode);
+    }
+
+    expect(codes).toContain(429);
+    expect(codes.at(-1)).toBe(429);
+    await redis.del(`rl:ip:${ip}`);
+  });
+});
+
 describe('login rate limiting', () => {
   it('stops guessing after the bucket empties', async () => {
     const email = `brute-${Date.now()}@example.com`;
@@ -125,6 +172,43 @@ describe('login rate limiting', () => {
     expect(codes.at(-1)).toBe(429);
 
     await db.delete(users).where(eq(users.email, email));
-    await redis.del(`rl:login:email:${email}`, 'rl:login:ip:127.0.0.1');
+    await redis.del(`rl:login:127.0.0.1:${email}`, 'rl:login:ip:127.0.0.1');
+  });
+
+  it('does not let one client lock an account for everyone else', async () => {
+    const email = `lockout-${Date.now()}@example.com`;
+    const password = 'a-long-enough-password';
+    const attacker = '198.51.100.9';
+    const owner = '198.51.100.10';
+
+    await app.inject({ method: 'POST', url: '/api/auth/signup', payload: { email, password } });
+    await redis.del(`rl:login:${attacker}:${email}`, `rl:login:${owner}:${email}`, `rl:login:ip:${attacker}`, `rl:login:ip:${owner}`);
+
+    for (let i = 0; i < LOGIN_CAPACITY + 2; i++) {
+      await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        remoteAddress: attacker,
+        payload: { email, password: `attacker-guess-${i}` },
+      });
+    }
+
+    const attackerNow = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      remoteAddress: attacker,
+      payload: { email, password },
+    });
+    const ownerNow = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      remoteAddress: owner,
+      payload: { email, password },
+    });
+
+    expect(attackerNow.statusCode).toBe(429);
+    expect(ownerNow.statusCode).toBe(200);
+
+    await db.delete(users).where(eq(users.email, email));
   });
 });
