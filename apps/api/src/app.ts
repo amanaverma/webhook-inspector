@@ -47,7 +47,7 @@ export function buildApp(
   });
 
   app.get('/metrics', async () => collectMetrics(db));
-  registerAuthRoutes(app, db);
+  registerAuthRoutes(app, db, redis);
   registerBinRoutes(app, db);
   registerCaptureRoutes(app, db, redis);
   registerReadRoutes(app, db);

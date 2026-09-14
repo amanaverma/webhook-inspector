@@ -3,6 +3,10 @@ import type { Redis } from 'ioredis';
 export const CAPACITY = 120;
 export const REFILL_PER_SECOND = 2;
 
+/** Login is far rarer than capture, so its bucket is small and refills slowly. */
+export const LOGIN_CAPACITY = 10;
+export const LOGIN_REFILL_PER_SECOND = 0.05;
+
 /**
  * Refills the bucket by elapsed time, spends one token, and reports the result.
  *
@@ -47,19 +51,24 @@ export type RateLimitResult = { allowed: boolean; remaining: number };
  * Allows the request when Redis is unreachable, because dropping real webhooks
  * is worse than briefly serving an unlimited number of them.
  */
-export async function spendToken(redis: Redis, key: string): Promise<RateLimitResult> {
+export async function spendToken(
+  redis: Redis,
+  key: string,
+  capacity = CAPACITY,
+  refillPerSecond = REFILL_PER_SECOND,
+): Promise<RateLimitResult> {
   try {
     const [allowed, remaining] = (await redis.eval(
       SCRIPT,
       1,
       key,
-      CAPACITY,
-      REFILL_PER_SECOND,
+      capacity,
+      refillPerSecond,
       Date.now() / 1000,
     )) as [number, number];
 
     return { allowed: allowed === 1, remaining };
   } catch {
-    return { allowed: true, remaining: CAPACITY };
+    return { allowed: true, remaining: capacity };
   }
 }

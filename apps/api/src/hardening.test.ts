@@ -1,20 +1,24 @@
-import { bins, createDb, requests } from '@wi/db';
+import { bins, createDb, requests, users } from '@wi/db';
 import { eq, sql } from 'drizzle-orm';
 import { Redis } from 'ioredis';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from './app.js';
-import { CAPACITY, spendToken } from './rate-limit.js';
+import { CAPACITY, LOGIN_CAPACITY, spendToken } from './rate-limit.js';
 import { collectMetrics, pruneRequests } from './retention.js';
+import { signedInCookie } from './test-auth.js';
 
 const db = createDb(process.env.DATABASE_URL!);
 const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6380', { maxRetriesPerRequest: 2 });
 const app = buildApp(db, process.env.DATABASE_URL!, redis);
 
+let cookie: string;
+
 let slug: string;
 
 beforeAll(async () => {
+  cookie = await signedInCookie(app);
   await app.ready();
-  slug = (await app.inject({ method: 'POST', url: '/api/bins', payload: { name: 'Hardening' } })).json().slug;
+  slug = (await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'Hardening' } })).json().slug;
   await redis.del(`rl:bin:${slug}`);
 });
 
@@ -99,5 +103,28 @@ describe('operational endpoints', () => {
       headers: { 'x-request-id': 'trace-me-123' },
     });
     expect(response.headers['x-request-id']).toBe('trace-me-123');
+  });
+});
+
+describe('login rate limiting', () => {
+  it('stops guessing after the bucket empties', async () => {
+    const email = `brute-${Date.now()}@example.com`;
+    await app.inject({ method: 'POST', url: '/api/auth/signup', payload: { email, password: 'a-long-enough-password' } });
+
+    const codes: number[] = [];
+    for (let i = 0; i < LOGIN_CAPACITY + 3; i++) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/auth/login',
+        payload: { email, password: `wrong-guess-${i}` },
+      });
+      codes.push(response.statusCode);
+    }
+
+    expect(codes).toContain(429);
+    expect(codes.at(-1)).toBe(429);
+
+    await db.delete(users).where(eq(users.email, email));
+    await redis.del(`rl:login:email:${email}`, 'rl:login:ip:127.0.0.1');
   });
 });
