@@ -1,11 +1,18 @@
-import { bins, requests, type Db } from '@wi/db';
-import { and, desc, eq, lt, or, sql } from 'drizzle-orm';
+import { bins, deliveries, requests, type Db } from '@wi/db';
+import { and, asc, desc, eq, lt, or, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { enqueueReplay } from '../delivery/queue.js';
 import { encodeBody } from './body-encoding.js';
 import { decodeCursor, encodeCursor } from './cursor.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const patchBinBody = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  forwardUrl: z.union([z.url().refine((value) => /^https?:/.test(value)), z.null()]).optional(),
+  isActive: z.boolean().optional(),
+});
 
 const listQuery = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
@@ -94,6 +101,47 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
     if (!row) return reply.code(404).send({ error: 'not_found' });
 
     const { body, ...rest } = row;
-    return { ...rest, ...encodeBody(body, row.contentType) };
+    const attempts = await db
+      .select()
+      .from(deliveries)
+      .where(eq(deliveries.requestId, id))
+      .orderBy(asc(deliveries.attempt), asc(deliveries.createdAt));
+
+    return { ...rest, ...encodeBody(body, row.contentType), deliveries: attempts };
+  });
+
+  app.patch('/api/bins/:slug', async (request, reply) => {
+    const { slug } = request.params as { slug: string };
+
+    const parsed = patchBinBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'invalid_body', details: z.treeifyError(parsed.error) });
+    }
+
+    const [updated] = await db
+      .update(bins)
+      .set(parsed.data)
+      .where(eq(bins.slug, slug))
+      .returning();
+
+    if (!updated) return reply.code(404).send({ error: 'not_found' });
+    return updated;
+  });
+
+  app.post('/api/requests/:id/replay', async (request, reply) => {
+    const { id } = request.params as { id: string };
+    if (!UUID.test(id)) return reply.code(400).send({ error: 'invalid_id' });
+
+    const [row] = await db
+      .select({ binId: requests.binId, forwardUrl: bins.forwardUrl })
+      .from(requests)
+      .innerJoin(bins, eq(bins.id, requests.binId))
+      .where(eq(requests.id, id))
+      .limit(1);
+
+    if (!row) return reply.code(404).send({ error: 'not_found' });
+    if (!row.forwardUrl) return reply.code(409).send({ error: 'no_forward_url' });
+
+    return reply.code(202).send(await enqueueReplay(db, id, row.forwardUrl));
   });
 }

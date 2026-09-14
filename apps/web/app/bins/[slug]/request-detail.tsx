@@ -1,4 +1,5 @@
 import type { RequestDetail } from '@/lib/api';
+import { Deliveries } from './deliveries';
 
 /** Pretty prints JSON, and returns the input unchanged when it does not parse. */
 function formatBody(request: RequestDetail): string {
@@ -77,6 +78,8 @@ export function RequestDetailPane({ request }: { request: RequestDetail | null }
           </pre>
         )}
       </section>
+
+      <Deliveries requestId={request.id} deliveries={request.deliveries} />
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { bins, requests, type Db } from '@wi/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest, HTTPMethods } from 'fastify';
+import { enqueue } from '../delivery/queue.js';
 import { notifyNewRequest } from '../notify.js';
 
 const METHODS: HTTPMethods[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
@@ -65,7 +66,7 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db): void {
       const { slug } = request.params as { slug: string };
 
       const [bin] = await db
-        .select({ id: bins.id })
+        .select({ id: bins.id, forwardUrl: bins.forwardUrl })
         .from(bins)
         .where(and(eq(bins.slug, slug), eq(bins.isActive, true)))
         .limit(1);
@@ -96,6 +97,7 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db): void {
         })
         .returning({ id: requests.id, receivedAt: requests.receivedAt });
 
+      if (bin.forwardUrl) await enqueue(db, row!.id, bin.forwardUrl);
       await notifyNewRequest(db, { binId: bin.id, requestId: row!.id });
 
       if (body.truncated) {
