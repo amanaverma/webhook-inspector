@@ -1,7 +1,9 @@
 import { bins, requests, type Db } from '@wi/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest, HTTPMethods } from 'fastify';
+import type { Redis } from 'ioredis';
 import { enqueue } from '../delivery/queue.js';
+import { spendToken } from '../rate-limit.js';
 import { notifyNewRequest } from '../notify.js';
 
 const METHODS: HTTPMethods[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
@@ -38,7 +40,7 @@ function flattenHeaders(request: FastifyRequest): Record<string, string> {
  * body parser with one that keeps raw bytes does not affect the JSON parsing
  * the rest of the API relies on.
  */
-export function registerCaptureRoutes(app: FastifyInstance, db: Db): void {
+export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis | null): void {
   void app.register(async (scope) => {
     scope.removeAllContentTypeParsers();
     scope.addContentTypeParser('*', (_request, payload, done) => {
@@ -73,6 +75,14 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db): void {
 
       if (!bin) {
         return reply.code(404).send({ error: 'unknown_bin' });
+      }
+
+      if (redis) {
+        const limit = await spendToken(redis, `rl:bin:${slug}`);
+        reply.header('x-ratelimit-remaining', String(limit.remaining));
+        if (!limit.allowed) {
+          return reply.code(429).send({ error: 'rate_limited' });
+        }
       }
 
       const body = (request.body as CapturedBody | undefined) ?? {

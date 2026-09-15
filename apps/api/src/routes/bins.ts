@@ -37,6 +37,7 @@ export function registerBinRoutes(app: FastifyInstance, db: Db): void {
       .insert(bins)
       .values({
         slug: generateSlug(),
+        userId: request.user?.id ?? null,
         name: parsed.data.name,
         forwardUrl: parsed.data.forwardUrl ?? null,
       })
