@@ -118,6 +118,14 @@ describe('capture endpoint', () => {
     expect(row.body).toHaveLength(0);
   });
 
+  it('drops the session cookie and keeps any other cookie', async () => {
+    await app.inject({ method: 'POST', url: `/i/${slug}`, headers: { cookie: `theme=dark; ${cookie}; lang=en` } });
+    expect((await latest()).headers.cookie).toBe('theme=dark; lang=en');
+
+    await app.inject({ method: 'POST', url: `/i/${slug}`, headers: { cookie } });
+    expect((await latest()).headers).not.toHaveProperty('cookie');
+  });
+
   it('keeps JSON parsing intact for the rest of the API', async () => {
     const response = await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'Still JSON' } });
     expect(response.statusCode).toBe(201);

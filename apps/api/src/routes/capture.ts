@@ -2,6 +2,7 @@ import { bins, requests, type Db } from '@wi/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest, HTTPMethods } from 'fastify';
 import type { Redis } from 'ioredis';
+import { COOKIE_NAME } from '../auth/session.js';
 import { enqueue } from '../delivery/queue.js';
 import { CAPACITY, REFILL_PER_SECOND, spendToken } from '../rate-limit.js';
 import { notifyNewRequest } from '../notify.js';
@@ -18,13 +19,31 @@ type CapturedBody = {
   truncated: boolean;
 };
 
-/** Header values Fastify may hand over as an array are joined with a comma, as on the wire. */
+/**
+ * Returns the request headers as stored for a capture.
+ *
+ * Header values Fastify may hand over as an array are joined with a comma, as on
+ * the wire. This app's own session cookie is removed and any other cookies are
+ * kept, so a signed in user who opens someone's capture URL in their browser
+ * does not hand that bin's owner their session.
+ */
 function flattenHeaders(request: FastifyRequest): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const [key, value] of Object.entries(request.headers)) {
     if (value === undefined) continue;
     headers[key] = Array.isArray(value) ? value.join(', ') : value;
   }
+
+  if (headers.cookie !== undefined) {
+    const kept = headers.cookie
+      .split(';')
+      .filter((pair) => pair.split('=')[0]!.trim() !== COOKIE_NAME)
+      .join(';')
+      .trim();
+    if (kept) headers.cookie = kept;
+    else delete headers.cookie;
+  }
+
   return headers;
 }
 

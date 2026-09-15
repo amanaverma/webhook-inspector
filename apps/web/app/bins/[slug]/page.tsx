@@ -1,4 +1,3 @@
-import { headers } from 'next/headers';
 import { notFound } from 'next/navigation';
 import { getBin, getRequest, listRequests } from '@/lib/api';
 import { CaptureUrl } from './capture-url';
@@ -8,22 +7,6 @@ import { RequestDetailPane } from './request-detail';
 import { RequestList } from './request-list';
 
 export const dynamic = 'force-dynamic';
-
-/**
- * Returns the origin a provider should post to.
- *
- * Falls back to the host serving this page, which is correct in development and
- * wherever the capture path is proxied through the web app. Set
- * `CAPTURE_ORIGIN` when the API answers on its own hostname.
- */
-async function captureOrigin(): Promise<string> {
-  if (process.env.CAPTURE_ORIGIN) return process.env.CAPTURE_ORIGIN;
-
-  const store = await headers();
-  const host = store.get('x-forwarded-host') ?? store.get('host') ?? 'localhost:3001';
-  const protocol = store.get('x-forwarded-proto') ?? (host.startsWith('localhost') ? 'http' : 'https');
-  return `${protocol}://${host}`;
-}
 
 type Props = {
   params: Promise<{ slug: string }>;
@@ -37,7 +20,8 @@ export default async function BinPage({ params, searchParams }: Props) {
   const bin = await getBin(slug);
   if (!bin) notFound();
 
-  const captureUrl = `${await captureOrigin()}/i/${bin.slug}`;
+  // Capture is served by the API on its own origin, never through this app.
+  const captureUrl = `${process.env.CAPTURE_ORIGIN ?? 'http://localhost:3000'}/i/${bin.slug}`;
 
   const [page, selected] = await Promise.all([
     listRequests(slug),
