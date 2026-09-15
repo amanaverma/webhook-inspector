@@ -12,17 +12,23 @@ const STATE_STYLES: Record<Delivery['state'], string> = {
   sending: 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-300',
 };
 
-export function Deliveries({ requestId, deliveries }: { requestId: string; deliveries: Delivery[] }) {
+type Props = { requestId: string; truncated: boolean; deliveries: Delivery[] };
+
+/** Delivery attempts for one request, with a Replay button that is disabled when the body was truncated. */
+export function Deliveries({ requestId, truncated, deliveries }: Props) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
 
   async function replay() {
     const response = await fetch(`/api/requests/${requestId}/replay`, { method: 'POST' });
     if (!response.ok) {
+      const { error: code } = (await response.json().catch(() => ({}))) as { error?: string };
       setError(
-        response.status === 409
+        code === 'no_forward_url'
           ? 'Set a forward URL for this bin before replaying.'
-          : 'Could not queue the replay.',
+          : code === 'body_truncated'
+            ? 'This body was cut at 1 MB, so it cannot be replayed.'
+            : 'Could not queue the replay.',
       );
       return;
     }
@@ -34,7 +40,12 @@ export function Deliveries({ requestId, deliveries }: { requestId: string; deliv
     <section className="flex flex-col gap-2">
       <h2 className="flex items-center justify-between text-sm font-semibold uppercase tracking-wide text-slate-500">
         Deliveries
-        <button onClick={replay} className="rounded border border-slate-300 px-2 py-1 text-xs font-medium normal-case dark:border-slate-700">
+        <button
+          onClick={replay}
+          disabled={truncated}
+          title={truncated ? 'The body was cut at 1 MB, so it cannot be replayed.' : undefined}
+          className="rounded border border-slate-300 px-2 py-1 text-xs font-medium normal-case disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700"
+        >
           Replay
         </button>
       </h2>
@@ -42,7 +53,9 @@ export function Deliveries({ requestId, deliveries }: { requestId: string; deliv
       {error ? <p className="text-xs text-rose-600">{error}</p> : null}
 
       {deliveries.length === 0 ? (
-        <p className="text-sm text-slate-500">Not forwarded. This bin has no forward URL.</p>
+        <p className="text-sm text-slate-500">
+          {truncated ? 'Not forwarded. The body was cut at 1 MB.' : 'Not forwarded. This bin has no forward URL.'}
+        </p>
       ) : (
         <ul className="flex flex-col divide-y divide-slate-200 rounded border border-slate-200 text-xs dark:divide-slate-800 dark:border-slate-800">
           {deliveries.map((delivery) => (

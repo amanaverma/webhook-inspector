@@ -153,7 +153,7 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
     if (!UUID.test(id)) return reply.code(400).send({ error: 'invalid_id' });
 
     const [row] = await db
-      .select({ slug: bins.slug, forwardUrl: bins.forwardUrl })
+      .select({ slug: bins.slug, forwardUrl: bins.forwardUrl, truncated: requests.truncated })
       .from(requests)
       .innerJoin(bins, eq(bins.id, requests.binId))
       .where(eq(requests.id, id))
@@ -164,6 +164,7 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
     const bin = await loadOwnedBin(db, row.slug, request.user);
     if (!bin) return reply.code(404).send({ error: 'not_found' });
     if (!row.forwardUrl) return reply.code(409).send({ error: 'no_forward_url' });
+    if (row.truncated) return reply.code(409).send({ error: 'body_truncated' });
 
     return reply.code(202).send(await enqueueReplay(db, id, row.forwardUrl));
   });

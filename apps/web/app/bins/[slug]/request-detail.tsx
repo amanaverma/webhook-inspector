@@ -79,7 +79,7 @@ export function RequestDetailPane({ request }: { request: RequestDetail | null }
         )}
       </section>
 
-      <Deliveries requestId={request.id} deliveries={request.deliveries} />
+      <Deliveries requestId={request.id} truncated={request.truncated} deliveries={request.deliveries} />
     </div>
   );
 }

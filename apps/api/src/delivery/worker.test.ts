@@ -191,6 +191,21 @@ describe('delivery worker', () => {
     await db.delete(bins).where(eq(bins.id, plain.id));
   });
 
+  it('refuses to replay a truncated body', async () => {
+    const oversized = Buffer.alloc(MAX_BODY_BYTES + 1, 'z');
+    const captured = await app.inject({
+      method: 'POST',
+      url: `/i/${slug}/cut`,
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: oversized,
+    });
+
+    const response = await app.inject({ headers: { cookie }, method: 'POST', url: `/api/requests/${captured.json().id}/replay` });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: 'body_truncated' });
+    expect(await attemptsFor(captured.json().id)).toHaveLength(0);
+  });
+
   it('shows the attempts on the request detail', async () => {
     respond = () => ({ status: 200 });
     const id = await capture('/history', 'x', 'text/plain');
