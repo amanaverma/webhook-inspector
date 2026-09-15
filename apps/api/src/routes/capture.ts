@@ -4,7 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest, HTTPMethods } from 
 import type { Redis } from 'ioredis';
 import { COOKIE_NAME } from '../auth/session.js';
 import { enqueue } from '../delivery/queue.js';
-import { CAPACITY, REFILL_PER_SECOND, spendToken } from '../rate-limit.js';
+import { hasToken, spendToken } from '../rate-limit.js';
 import { notifyNewRequest } from '../notify.js';
 
 const METHODS: HTTPMethods[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
@@ -87,11 +87,13 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis
     const handler = async (request: FastifyRequest, reply: FastifyReply) => {
       const { slug } = request.params as { slug: string };
 
-      // Spent before the lookup, so a flood against slugs that do not exist
-      // costs a Redis call rather than a database query each.
-      if (redis) {
-        const perClient = await spendToken(redis, `rl:ip:${request.ip}`, CAPACITY, REFILL_PER_SECOND);
-        if (!perClient.allowed) return reply.code(429).send({ error: 'rate_limited' });
+      // A client that keeps posting to slugs that do not exist is refused before
+      // the lookup, so its flood costs a Redis call rather than a query each.
+      // Only misses spend from this bucket, so traffic to real bins from the
+      // same address never drains it.
+      const missKey = `rl:miss:${request.ip}`;
+      if (redis && !(await hasToken(redis, missKey)).allowed) {
+        return reply.code(429).send({ error: 'rate_limited' });
       }
 
       const [bin] = await db
@@ -101,6 +103,7 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis
         .limit(1);
 
       if (!bin) {
+        if (redis) await spendToken(redis, missKey);
         return reply.code(404).send({ error: 'unknown_bin' });
       }
 

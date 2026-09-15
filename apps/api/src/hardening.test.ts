@@ -53,6 +53,26 @@ describe('rate limiting', () => {
     await redis.del(`rl:bin:${slug}`);
   });
 
+  it('refuses a client that keeps missing without blocking real bins', async () => {
+    const remoteAddress = '192.0.2.77';
+    const key = `rl:miss:${remoteAddress}`;
+
+    for (let i = 0; i < CAPACITY; i++) {
+      await app.inject({ method: 'POST', url: `/i/nope${i}`, payload: 'x', remoteAddress });
+    }
+    const refused = await app.inject({ method: 'POST', url: '/i/nope-again', payload: 'x', remoteAddress });
+    expect(refused.statusCode).toBe(429);
+
+    await redis.hset(key, 'tokens', CAPACITY, 'updated', Date.now() / 1000);
+    for (let i = 0; i < CAPACITY + 5; i++) {
+      await app.inject({ method: 'POST', url: `/i/${slug}/busy`, payload: 'x', remoteAddress });
+    }
+    const miss = await app.inject({ method: 'POST', url: '/i/nope-after', payload: 'x', remoteAddress });
+    expect(miss.statusCode).toBe(404);
+
+    await redis.del(key, `rl:bin:${slug}`);
+  });
+
   it('captures normally with tokens available', async () => {
     const response = await app.inject({ method: 'POST', url: `/i/${slug}/fine`, payload: 'x' });
     expect(response.statusCode).toBe(200);

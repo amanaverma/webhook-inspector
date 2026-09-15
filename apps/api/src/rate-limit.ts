@@ -12,17 +12,19 @@ export const LOGIN_IP_CAPACITY = 40;
 export const LOGIN_IP_REFILL_PER_SECOND = 0.2;
 
 /**
- * Refills the bucket by elapsed time, spends one token, and reports the result.
+ * Refills the bucket by elapsed time, spends `cost` tokens when at least one is
+ * available, and reports the result.
  *
  * Runs as one Lua script so the read, the refill and the spend cannot interleave
- * with another request. Returns whether the caller may proceed and how many
- * tokens are left.
+ * with another request. Returns whether a token was available and how many are
+ * left. A cost of 0 checks the bucket without spending from it.
  */
 const SCRIPT = `
 local key = KEYS[1]
 local capacity = tonumber(ARGV[1])
 local refill = tonumber(ARGV[2])
 local now = tonumber(ARGV[3])
+local cost = tonumber(ARGV[4])
 
 local bucket = redis.call('HMGET', key, 'tokens', 'updated')
 local tokens = tonumber(bucket[1])
@@ -37,7 +39,7 @@ tokens = math.min(capacity, tokens + (now - updated) * refill)
 
 local allowed = 0
 if tokens >= 1 then
-  tokens = tokens - 1
+  tokens = tokens - cost
   allowed = 1
 end
 
@@ -48,6 +50,30 @@ return { allowed, math.floor(tokens) }
 `;
 
 export type RateLimitResult = { allowed: boolean; remaining: number };
+
+async function runBucket(
+  redis: Redis,
+  key: string,
+  capacity: number,
+  refillPerSecond: number,
+  cost: 0 | 1,
+): Promise<RateLimitResult> {
+  try {
+    const [allowed, remaining] = (await redis.eval(
+      SCRIPT,
+      1,
+      key,
+      capacity,
+      refillPerSecond,
+      Date.now() / 1000,
+      cost,
+    )) as [number, number];
+
+    return { allowed: allowed === 1, remaining };
+  } catch {
+    return { allowed: true, remaining: capacity };
+  }
+}
 
 /**
  * Spends one token from the bucket named by `key`.
@@ -61,18 +87,19 @@ export async function spendToken(
   capacity = CAPACITY,
   refillPerSecond = REFILL_PER_SECOND,
 ): Promise<RateLimitResult> {
-  try {
-    const [allowed, remaining] = (await redis.eval(
-      SCRIPT,
-      1,
-      key,
-      capacity,
-      refillPerSecond,
-      Date.now() / 1000,
-    )) as [number, number];
+  return runBucket(redis, key, capacity, refillPerSecond, 1);
+}
 
-    return { allowed: allowed === 1, remaining };
-  } catch {
-    return { allowed: true, remaining: capacity };
-  }
+/**
+ * Reports whether the bucket named by `key` has a token, without spending one.
+ *
+ * Allows the request when Redis is unreachable, the same as `spendToken`.
+ */
+export async function hasToken(
+  redis: Redis,
+  key: string,
+  capacity = CAPACITY,
+  refillPerSecond = REFILL_PER_SECOND,
+): Promise<RateLimitResult> {
+  return runBucket(redis, key, capacity, refillPerSecond, 0);
 }
