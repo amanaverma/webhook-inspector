@@ -121,6 +121,8 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis
         truncated: false,
       };
 
+      const queryStart = request.url.indexOf('?');
+
       // The row and its first delivery are written together, so a failure
       // cannot leave a stored request that is never forwarded.
       const row = await db.transaction(async (tx) => {
@@ -129,8 +131,9 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis
           .values({
             binId: bin.id,
             method: request.method,
-            path: request.url.split('?')[0]!,
+            path: queryStart === -1 ? request.url : request.url.slice(0, queryStart),
             query: request.query as Record<string, string | string[]>,
+            rawQuery: queryStart === -1 ? null : request.url.slice(queryStart + 1),
             headers: flattenHeaders(request),
             body: body.bytes,
             bodySize: body.size,

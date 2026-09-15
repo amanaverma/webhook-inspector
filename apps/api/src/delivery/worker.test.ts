@@ -261,7 +261,7 @@ describe('blocked targets', () => {
 describe('deliveryUrl', () => {
   const base = {
     id: 'd', requestId: 'r', attempt: 1, method: 'POST',
-    headers: {}, body: Buffer.alloc(0), slug: 'abc123',
+    headers: {}, body: Buffer.alloc(0), slug: 'abc123', rawQuery: null,
   };
 
   it('appends the path below the slug and keeps the query', () => {
@@ -279,7 +279,15 @@ describe('deliveryUrl', () => {
       .toBe('https://example.com/hook/x');
   });
 
-  it('keeps the target own query parameter when both carry the same name', () => {
+  it('appends the raw query unchanged, after the target own query', () => {
+    const raw = 'zeta=1&a=x%20y&flag&b=1&zeta=2';
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook', path: '/i/abc123', query: {}, rawQuery: raw }))
+      .toBe(`https://example.com/hook?${raw}`);
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook?env=prod#top', path: '/i/abc123', query: {}, rawQuery: 'env=x' }))
+      .toBe('https://example.com/hook?env=prod&env=x');
+  });
+
+  it('keeps the target own query parameter when an older row has no raw query', () => {
     expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook?env=prod', path: '/i/abc123', query: { env: 'spoofed' } }))
       .toBe('https://example.com/hook?env=prod');
   });
@@ -291,7 +299,7 @@ describe('forwarding fidelity', () => {
     hits = [];
     await app.inject({
       method: 'POST',
-      url: `/i/${slug}/webhooks/stripe?attempt=2&sig=abc`,
+      url: `/i/${slug}/webhooks/stripe?sig=abc&attempt=2&flag&note=a%20b`,
       headers: { 'content-type': 'application/json' },
       payload: '{"n":1}',
     });
@@ -300,11 +308,7 @@ describe('forwarding fidelity', () => {
 
     expect(hits).toHaveLength(1);
 
-    // Parsed rather than compared as a string, since the stored query is jsonb
-    // and carries no order.
-    const delivered = new URL(hits[0]!.url, 'http://target.invalid');
-    expect(delivered.pathname).toBe('/hook/webhooks/stripe');
-    expect(Object.fromEntries(delivered.searchParams)).toEqual({ attempt: '2', sig: 'abc' });
+    expect(hits[0]!.url).toBe('/hook/webhooks/stripe?sig=abc&attempt=2&flag&note=a%20b');
   });
 
   it('does not forward a truncated body', async () => {

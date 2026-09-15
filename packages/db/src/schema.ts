@@ -68,6 +68,8 @@ export const requests = pgTable(
     method: text('method').notNull(),
     path: text('path').notNull(),
     query: jsonb('query').$type<Record<string, string | string[]>>().notNull().default({}),
+    /** The query string as it arrived, without the leading `?`. Null when none was recorded. */
+    rawQuery: text('raw_query'),
     headers: jsonb('headers').$type<Record<string, string>>().notNull().default({}),
     body: bytea('body').notNull(),
     bodySize: integer('body_size').notNull(),

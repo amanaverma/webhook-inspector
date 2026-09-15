@@ -57,6 +57,7 @@ export type ClaimedDelivery = {
   method: string;
   path: string;
   query: Record<string, string | string[]>;
+  rawQuery: string | null;
   slug: string;
   headers: Record<string, string>;
   body: Buffer;
@@ -92,7 +93,7 @@ export async function claimDue(db: Db, limit: number): Promise<ClaimedDelivery[]
     from due, ${requests} r, ${bins} b
     where d.id = due.id and r.id = d.request_id and b.id = r.bin_id
     returning d.id, d.request_id as "requestId", d.target_url as "targetUrl", d.attempt,
-              r.method, r.path, r.query, r.headers, r.body, b.slug
+              r.method, r.path, r.query, r.raw_query as "rawQuery", r.headers, r.body, b.slug
   `);
 
   return rows as unknown as ClaimedDelivery[];

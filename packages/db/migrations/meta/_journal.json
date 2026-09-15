@@ -43,6 +43,13 @@
       "when": 1789388144376,
       "tag": "0005_cuddly_yellowjacket",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789497228313,
+      "tag": "0006_light_sir_ram",
+      "breakpoints": true
     }
   ]
 }

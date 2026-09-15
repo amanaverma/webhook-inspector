@@ -20,10 +20,14 @@ const SKIP_HEADERS = new Set([
  * Builds the URL an attempt is sent to.
  *
  * Whatever the provider addressed below `/i/<slug>` is appended to the target's
- * own path, and the captured query is merged in, with the target's own
- * parameters winning. So a webhook sent to `/i/<slug>/events?sig=abc` with a
- * target of `https://example.com/hook` is delivered to
- * `https://example.com/hook/events?sig=abc`.
+ * own path, and the captured query string is appended after the target's own
+ * query exactly as it arrived. So a webhook sent to `/i/<slug>/events?b=2&a=1`
+ * with a target of `https://example.com/hook?env=prod` is delivered to
+ * `https://example.com/hook/events?env=prod&b=2&a=1`.
+ *
+ * A name present in both queries is sent twice, target first. When the row has
+ * no raw query, the query is rebuilt from the parsed one instead, which loses
+ * order and encoding and skips names the target already has.
  */
 export function deliveryUrl(claimed: ClaimedDelivery): string {
   const url = new URL(claimed.targetUrl);
@@ -31,6 +35,12 @@ export function deliveryUrl(claimed: ClaimedDelivery): string {
 
   if (suffix) {
     url.pathname = `${url.pathname.replace(/\/$/, '')}${suffix}`;
+  }
+
+  if (claimed.rawQuery !== null) {
+    if (!claimed.rawQuery) return url.toString();
+    url.hash = '';
+    return `${url.toString()}${url.search ? '&' : '?'}${claimed.rawQuery}`;
   }
 
   for (const [key, value] of Object.entries(claimed.query ?? {})) {
