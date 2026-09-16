@@ -21,7 +21,8 @@ const SKIP_HEADERS = new Set([
 ]);
 
 /**
- * Builds the URL an attempt is sent to.
+ * Builds the URL an attempt is sent to, or null when the captured path would
+ * leave the target's own path.
  *
  * Whatever the provider addressed below `/i/<slug>` is appended to the target's
  * own path, and the captured query string is appended after the target's own
@@ -32,13 +33,22 @@ const SKIP_HEADERS = new Set([
  * A name present in both queries is sent twice, target first. When the row has
  * no raw query, the query is rebuilt from the parsed one instead, which loses
  * order and encoding and skips names the target already has.
+ *
+ * Returns null for a path holding `..` segments, since anyone who knows the
+ * slug can choose that path, and resolving it would address a part of the
+ * target the bin was never pointed at.
  */
-export function deliveryUrl(claimed: ClaimedDelivery): string {
+export function deliveryUrl(claimed: ClaimedDelivery): string | null {
   const url = new URL(claimed.targetUrl);
-  const suffix = claimed.path.replace(`/i/${claimed.slug}`, '');
+  const base = url.pathname.replace(/\/$/, '');
+  const prefix = `/i/${claimed.slug}`;
+  const suffix = claimed.path.startsWith(prefix) ? claimed.path.slice(prefix.length) : '';
 
   if (suffix) {
-    url.pathname = `${url.pathname.replace(/\/$/, '')}${suffix}`;
+    url.pathname = `${base}${suffix}`;
+    // Assigning resolves `..` and its encoded spellings, so a path that no
+    // longer sits under the target's own path was addressing something else.
+    if (url.pathname !== base && !url.pathname.startsWith(`${base}/`)) return null;
   }
 
   if (claimed.rawQuery !== null) {
@@ -81,9 +91,14 @@ export async function deliver(claimed: ClaimedDelivery): Promise<Attempt> {
     return { status: null, durationMs: 0, error: `blocked target: ${target.reason}`, terminal: true };
   }
 
+  const url = deliveryUrl(claimed);
+  if (url === null) {
+    return { status: null, durationMs: 0, error: 'capture path leaves the target path', terminal: true };
+  }
+
   const started = Date.now();
   try {
-    const response = await fetch(deliveryUrl(claimed), {
+    const response = await fetch(url, {
       method: claimed.method,
       headers,
       signal: AbortSignal.timeout(TIMEOUT_MS),
@@ -105,13 +120,28 @@ export async function deliver(claimed: ClaimedDelivery): Promise<Attempt> {
 /**
  * Claims every delivery that is due and attempts each one.
  *
- * Returns how many were attempted, so a caller can keep ticking while there is
- * work rather than waiting for the next interval.
+ * Returns how many were attempted. Waits for all of them, including any whose
+ * bookkeeping write failed, so a caller knows nothing is still in flight when
+ * this resolves.
  */
 export async function runOnce(db: Db): Promise<number> {
   const claimed = await claimDue(db, BATCH);
-  await Promise.all(claimed.map(async (delivery) => recordAttempt(db, delivery, await deliver(delivery))));
+  const results = await Promise.allSettled(
+    claimed.map(async (delivery) => recordAttempt(db, delivery, await deliver(delivery))),
+  );
+
+  for (const result of results) {
+    // A row whose outcome could not be written stays `sending` and is claimed
+    // again once it goes stale, so it is logged rather than retried here.
+    if (result.status === 'rejected') console.error('delivery attempt not recorded', result.reason);
+  }
+
   return claimed.length;
+}
+
+/** Keeps claiming while a full batch comes back, so a backlog drains rather than waiting a tick per batch. */
+async function drain(db: Db): Promise<void> {
+  while ((await runOnce(db)) === BATCH);
 }
 
 /**
@@ -130,7 +160,7 @@ export function startWorker(db: Db, intervalMs = 1_000): () => Promise<void> {
     // all run back to back once the targets recover.
     if (stopped || running) return;
 
-    running = runOnce(db)
+    running = drain(db)
       .catch((error: unknown) => {
         console.error('delivery tick failed', error);
       })

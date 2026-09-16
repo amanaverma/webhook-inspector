@@ -317,7 +317,7 @@ describe('blocked targets', () => {
 describe('deliveryUrl', () => {
   const base = {
     id: 'd', requestId: 'r', attempt: 1, method: 'POST',
-    headers: {}, body: Buffer.alloc(0), slug: 'abc123', rawQuery: null,
+    headers: {}, body: Buffer.alloc(0), slug: 'abc123', rawQuery: null, chainKey: 'r:capture',
   };
 
   it('appends the path below the slug and keeps the query', () => {
@@ -333,6 +333,23 @@ describe('deliveryUrl', () => {
   it('does not double the slash when the target ends in one', () => {
     expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook/', path: '/i/abc123/x', query: {} }))
       .toBe('https://example.com/hook/x');
+  });
+
+  it('refuses a capture path that leaves the target path', () => {
+    const escaping = ['/i/abc123/../../admin', '/i/abc123/%2e%2e/%2e%2e/admin', '/i/abc123/.%2e/secret'];
+    for (const path of escaping) {
+      expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook', path, query: {} }), path).toBeNull();
+    }
+  });
+
+  it('ignores a path that does not start with the capture prefix', () => {
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook', path: '/i/%61bc123/x', query: {} }))
+      .toBe('https://example.com/hook');
+  });
+
+  it('keeps a path whose characters need encoding', () => {
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook', path: '/i/abc123/a b', query: {} }))
+      .toBe('https://example.com/hook/a%20b');
   });
 
   it('appends the raw query unchanged, after the target own query', () => {
