@@ -17,16 +17,44 @@ export function LiveTail({ slug }: { slug: string }) {
   const [status, setStatus] = useState<Status>('connecting');
 
   useEffect(() => {
-    const source = new EventSource(`/api/bins/${slug}/stream`);
+    let source: EventSource | null = null;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let delay = 1_000;
+    let done = false;
 
-    source.onopen = () => setStatus('live');
-    source.onerror = () => setStatus('offline');
-    source.onmessage = () => {
-      setStatus('live');
-      router.refresh();
+    const connect = () => {
+      source = new EventSource(`/api/bins/${slug}/stream`);
+
+      source.onopen = () => {
+        setStatus('live');
+        delay = 1_000;
+      };
+
+      source.onmessage = () => {
+        setStatus('live');
+        router.refresh();
+      };
+
+      source.onerror = () => {
+        setStatus('offline');
+
+        // A browser only retries by itself while the connection stays open. A
+        // response that is not an event stream, which is what a restarting API
+        // answers through the proxy, closes it for good, so reconnect here.
+        if (done || source?.readyState !== EventSource.CLOSED) return;
+        source.close();
+        retry = setTimeout(connect, delay);
+        delay = Math.min(delay * 2, 30_000);
+      };
     };
 
-    return () => source.close();
+    connect();
+
+    return () => {
+      done = true;
+      clearTimeout(retry);
+      source?.close();
+    };
   }, [slug, router]);
 
   const label = { connecting: 'Connecting', live: 'Live', offline: 'Reconnecting' }[status];

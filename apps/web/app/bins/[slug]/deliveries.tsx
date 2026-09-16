@@ -18,9 +18,15 @@ type Props = { requestId: string; truncated: boolean; deliveries: Delivery[] };
 export function Deliveries({ requestId, truncated, deliveries }: Props) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
 
   async function replay() {
-    const response = await fetch(`/api/requests/${requestId}/replay`, { method: 'POST' });
+    if (pending) return;
+    setPending(true);
+
+    const response = await fetch(`/api/requests/${requestId}/replay`, { method: 'POST' }).finally(() =>
+      setPending(false),
+    );
     if (!response.ok) {
       const { error: code } = (await response.json().catch(() => ({}))) as { error?: string };
       setError(
@@ -42,11 +48,11 @@ export function Deliveries({ requestId, truncated, deliveries }: Props) {
         Deliveries
         <button
           onClick={replay}
-          disabled={truncated}
+          disabled={truncated || pending}
           title={truncated ? 'The body was cut at 1 MB, so it cannot be replayed.' : undefined}
           className="rounded border border-slate-300 px-2 py-1 text-xs font-medium normal-case disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700"
         >
-          Replay
+          {pending ? 'Replaying' : 'Replay'}
         </button>
       </h2>
 

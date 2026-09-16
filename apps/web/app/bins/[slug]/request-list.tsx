@@ -15,14 +15,25 @@ function formatSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/**
+ * The captured requests of one page, newest first.
+ *
+ * `nextCursor` comes from the API and addresses the page after this one. Pass
+ * `onPage` when the view is already past the newest page, which is what decides
+ * whether a way back to it is shown.
+ */
 export function RequestList({
   slug,
   requests,
   selectedId,
+  nextCursor,
+  onPage,
 }: {
   slug: string;
   requests: RequestSummary[];
   selectedId: string | null;
+  nextCursor: string | null;
+  onPage: boolean;
 }) {
   if (requests.length === 0) {
     return (
@@ -33,6 +44,7 @@ export function RequestList({
   }
 
   return (
+    <div className="flex flex-col gap-2">
     <ul className="flex max-h-[32rem] flex-col divide-y divide-slate-200 overflow-y-auto rounded border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
       {requests.map((request) => (
         <li key={request.id}>
@@ -57,5 +69,25 @@ export function RequestList({
         </li>
       ))}
     </ul>
+
+      {nextCursor || onPage ? (
+        <nav className="flex justify-between text-xs">
+          {onPage ? (
+            <Link href={`/bins/${slug}`} className="font-medium underline">
+              Newest
+            </Link>
+          ) : (
+            <span />
+          )}
+          {nextCursor ? (
+            <Link href={`/bins/${slug}?before=${encodeURIComponent(nextCursor)}`} className="font-medium underline">
+              Older
+            </Link>
+          ) : (
+            <span />
+          )}
+        </nav>
+      ) : null}
+    </div>
   );
 }
