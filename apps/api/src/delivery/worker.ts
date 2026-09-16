@@ -1,8 +1,12 @@
 import type { Db } from '@wi/db';
+import { Agent, fetch } from 'undici';
 import { claimDue, recordAttempt, type Attempt, type ClaimedDelivery } from './queue.js';
-import { checkTargetUrl } from './target-url.js';
+import { checkTargetUrl, guardedLookup } from './target-url.js';
 
 const TIMEOUT_MS = 10_000;
+
+/** Sends every attempt through a connection whose own address lookup is checked. */
+const dispatcher = new Agent({ connect: { lookup: guardedLookup } });
 const BATCH = 10;
 
 /** Headers that describe the old hop rather than the payload, so they are not forwarded. */
@@ -60,8 +64,9 @@ export function deliveryUrl(claimed: ClaimedDelivery): string {
  * target could not be reached or did not answer within the timeout.
  *
  * The target is checked again here rather than trusting the row, because a row
- * may predate the check, and because a hostname can resolve to a private
- * address only at the moment it is called.
+ * may hold a URL that was never checked. The connection then resolves the host
+ * through `guardedLookup`, so a name that answers with a private address at
+ * connect time is refused rather than called.
  */
 export async function deliver(claimed: ClaimedDelivery): Promise<Attempt> {
   const headers: Record<string, string> = {};
@@ -83,6 +88,7 @@ export async function deliver(claimed: ClaimedDelivery): Promise<Attempt> {
       headers,
       signal: AbortSignal.timeout(TIMEOUT_MS),
       redirect: 'manual',
+      dispatcher,
       ...(claimed.body.byteLength > 0 ? { body: new Uint8Array(claimed.body) } : {}),
     });
     await response.arrayBuffer();
