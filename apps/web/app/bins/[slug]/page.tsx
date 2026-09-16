@@ -1,5 +1,5 @@
-import { notFound } from 'next/navigation';
-import { getBin, getRequest, listRequests } from '@/lib/api';
+import { notFound, redirect } from 'next/navigation';
+import { currentUser, getBin, getRequest, listRequests } from '@/lib/api';
 import { CaptureUrl } from './capture-url';
 import { ForwardUrl } from './forward-url';
 import { LiveTail } from './live-tail';
@@ -10,18 +10,26 @@ export const dynamic = 'force-dynamic';
 
 type Props = {
   params: Promise<{ slug: string }>;
-  searchParams: Promise<{ request?: string }>;
+  searchParams: Promise<{ request?: string; before?: string }>;
 };
 
 export default async function BinPage({ params, searchParams }: Props) {
   const { slug } = await params;
-  const { request: selectedId } = await searchParams;
+  const { request: selectedId, before } = await searchParams;
 
   const bin = await getBin(slug);
-  if (!bin) notFound();
+  if (!bin) {
+    // The API answers 404 for a bin that is not yours, which is also what a
+    // caller with no session gets, so ask for a sign in before saying it is gone.
+    if (!(await currentUser())) redirect('/login');
+    notFound();
+  }
+
+  // Capture is served by the API on its own origin, never through this app.
+  const captureUrl = `${process.env.CAPTURE_ORIGIN ?? 'http://localhost:3000'}/i/${bin.slug}`;
 
   const [page, selected] = await Promise.all([
-    listRequests(slug),
+    listRequests(slug, before),
     selectedId ? getRequest(selectedId) : Promise.resolve(null),
   ]);
 
@@ -29,7 +37,7 @@ export default async function BinPage({ params, searchParams }: Props) {
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-2">
         <h1 className="text-xl font-semibold tracking-tight">{bin.name}</h1>
-        <CaptureUrl slug={bin.slug} />
+        <CaptureUrl url={captureUrl} />
         <ForwardUrl slug={bin.slug} current={bin.forwardUrl} />
         <div className="flex items-center gap-3">
           <p className="text-sm text-slate-500">
@@ -41,7 +49,13 @@ export default async function BinPage({ params, searchParams }: Props) {
       </header>
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
-        <RequestList slug={slug} requests={page?.requests ?? []} selectedId={selectedId ?? null} />
+        <RequestList
+          slug={slug}
+          requests={page?.requests ?? []}
+          selectedId={selectedId ?? null}
+          nextCursor={page?.nextCursor ?? null}
+          onPage={before !== undefined}
+        />
         <RequestDetailPane request={selected} />
       </div>
     </div>

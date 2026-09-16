@@ -2,23 +2,27 @@ import { bins, createDb, requests } from '@wi/db';
 import { desc, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
-import { MAX_BODY_BYTES } from './capture.js';
+import { MAX_BODY_BYTES, MAX_UPLOAD_BYTES } from './capture.js';
+import { signedInCookie } from '../test-auth.js';
 
 const db = createDb(process.env.DATABASE_URL!);
 const app = buildApp(db);
+
+let cookie: string;
 
 let slug: string;
 let binId: string;
 let inactiveSlug: string;
 
 beforeAll(async () => {
+  cookie = await signedInCookie(app);
   await app.ready();
 
-  const created = (await app.inject({ method: 'POST', url: '/api/bins', payload: { name: 'Capture' } })).json();
+  const created = (await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'Capture' } })).json();
   slug = created.slug;
   binId = created.id;
 
-  inactiveSlug = (await app.inject({ method: 'POST', url: '/api/bins', payload: { name: 'Off' } })).json().slug;
+  inactiveSlug = (await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'Off' } })).json().slug;
   await db.update(bins).set({ isActive: false }).where(eq(bins.slug, inactiveSlug));
 });
 
@@ -114,8 +118,51 @@ describe('capture endpoint', () => {
     expect(row.body).toHaveLength(0);
   });
 
+  it('drops the session cookie and keeps any other cookie', async () => {
+    await app.inject({ method: 'POST', url: `/i/${slug}`, headers: { cookie: `theme=dark; ${cookie}; lang=en` } });
+    expect((await latest()).headers.cookie).toBe('theme=dark; lang=en');
+
+    await app.inject({ method: 'POST', url: `/i/${slug}`, headers: { cookie } });
+    expect((await latest()).headers).not.toHaveProperty('cookie');
+  });
+
+  it('refuses a body over the upload ceiling and stores nothing', async () => {
+    const before = await latest();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/i/${slug}`,
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: Buffer.alloc(MAX_UPLOAD_BYTES + 1, 'z'),
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect((await latest()).id).toBe(before.id);
+  });
+
+  it('closes a request that stops sending', () => {
+    expect(app.server.requestTimeout).toBe(30_000);
+  });
+
+  it('stores a request whose content type is not a media type', async () => {
+    for (const sent of ['json', '', 'a/b c']) {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/i/${slug}`,
+        headers: { 'content-type': sent },
+        payload: 'x',
+      });
+
+      expect(response.statusCode, sent).toBe(200);
+
+      const row = await latest();
+      expect(row.contentType, sent).toBe(sent);
+      expect(row.headers['content-type'], sent).toBe(sent);
+      expect(row.body.toString(), sent).toBe('x');
+    }
+  });
+
   it('keeps JSON parsing intact for the rest of the API', async () => {
-    const response = await app.inject({ method: 'POST', url: '/api/bins', payload: { name: 'Still JSON' } });
+    const response = await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'Still JSON' } });
     expect(response.statusCode).toBe(201);
     await db.delete(bins).where(eq(bins.id, response.json().id));
   });

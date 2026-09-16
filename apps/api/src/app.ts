@@ -24,6 +24,15 @@ export function buildApp(
 ): FastifyInstance {
   const app = Fastify({
     logger: process.env.NODE_ENV === 'test' ? false : { level: process.env.LOG_LEVEL ?? 'info' },
+    // Off unless a deployment says otherwise. Behind a proxy every client
+    // otherwise shares one address, which collapses the rate limit buckets into
+    // one and records the proxy as the source of every captured request. Turned
+    // on without a proxy in front, a client could spoof its own address.
+    trustProxy: process.env.TRUST_PROXY === 'true',
+    // A sender that opens a connection and then stops writing holds a slot until
+    // this fires. Fastify leaves it off by default, which lets a handful of slow
+    // senders hold every connection the process has.
+    requestTimeout: 30_000,
     // Trusts the id a proxy already assigned, so one request keeps one id across services.
     genReqId: (request) => (request.headers['x-request-id'] as string) ?? randomUUID(),
   });
@@ -46,8 +55,17 @@ export function buildApp(
     }
   });
 
-  app.get('/metrics', async () => collectMetrics(db));
-  registerAuthRoutes(app, db);
+  app.get('/metrics', async (request, reply) => {
+    // Open when no token is set, which suits local use; a deployment sets one
+    // and gives it to whatever scrapes this.
+    const expected = process.env.METRICS_TOKEN;
+    if (expected && request.headers.authorization !== `Bearer ${expected}`) {
+      return reply.code(401).send({ error: 'unauthenticated' });
+    }
+
+    return collectMetrics(db);
+  });
+  registerAuthRoutes(app, db, redis);
   registerBinRoutes(app, db);
   registerCaptureRoutes(app, db, redis);
   registerReadRoutes(app, db);

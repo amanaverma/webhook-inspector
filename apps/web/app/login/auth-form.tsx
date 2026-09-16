@@ -8,6 +8,7 @@ const MESSAGES: Record<string, string> = {
   email_taken: 'That email already has an account. Sign in instead.',
   invalid_credentials: 'That email and password do not match an account.',
   invalid_body: 'Enter a valid email and a password of at least 10 characters.',
+  too_many_attempts: 'Too many attempts. Wait a minute, then try again.',
 };
 
 export function AuthForm({ mode }: { mode: 'login' | 'signup' }) {
