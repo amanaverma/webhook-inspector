@@ -2,7 +2,7 @@ import { bins, createDb, requests } from '@wi/db';
 import { desc, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
-import { MAX_BODY_BYTES } from './capture.js';
+import { MAX_BODY_BYTES, MAX_UPLOAD_BYTES } from './capture.js';
 import { signedInCookie } from '../test-auth.js';
 
 const db = createDb(process.env.DATABASE_URL!);
@@ -124,6 +124,23 @@ describe('capture endpoint', () => {
 
     await app.inject({ method: 'POST', url: `/i/${slug}`, headers: { cookie } });
     expect((await latest()).headers).not.toHaveProperty('cookie');
+  });
+
+  it('refuses a body over the upload ceiling and stores nothing', async () => {
+    const before = await latest();
+    const response = await app.inject({
+      method: 'POST',
+      url: `/i/${slug}`,
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: Buffer.alloc(MAX_UPLOAD_BYTES + 1, 'z'),
+    });
+
+    expect(response.statusCode).toBe(413);
+    expect((await latest()).id).toBe(before.id);
+  });
+
+  it('closes a request that stops sending', () => {
+    expect(app.server.requestTimeout).toBe(30_000);
   });
 
   it('keeps JSON parsing intact for the rest of the API', async () => {

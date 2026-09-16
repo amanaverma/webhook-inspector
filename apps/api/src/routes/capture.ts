@@ -11,6 +11,14 @@ const METHODS: HTTPMethods[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD',
 
 export const MAX_BODY_BYTES = 1_048_576;
 
+/**
+ * The largest upload read at all, past which the request is refused.
+ *
+ * A body over `MAX_BODY_BYTES` is still stored up to that cap and reported with
+ * its real size, which is why this ceiling sits above it rather than at it.
+ */
+export const MAX_UPLOAD_BYTES = 8 * MAX_BODY_BYTES;
+
 type CapturedBody = {
   /** The first `MAX_BODY_BYTES` bytes of the body. */
   bytes: Buffer;
@@ -53,8 +61,10 @@ function flattenHeaders(request: FastifyRequest): Record<string, string> {
  * Stores the request as it arrived, including the unparsed body, and answers
  * 200 once the row is written. A body over `MAX_BODY_BYTES` is stored up to
  * that limit with `truncated` set and answered 413, and is never forwarded,
- * since the target would receive something the provider did not send. An
- * unknown or inactive slug gets a 404 and nothing is stored.
+ * since the target would receive something the provider did not send. A body
+ * over `MAX_UPLOAD_BYTES` is refused with 413 and stored not at all, so one
+ * sender cannot hold the process reading forever. An unknown or inactive slug
+ * gets a 404 and nothing is stored.
  *
  * Routes are registered inside their own plugin scope so that replacing the
  * body parser with one that keeps raw bytes does not affect the JSON parsing
@@ -67,9 +77,19 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis
       const kept: Buffer[] = [];
       let keptBytes = 0;
       let size = 0;
+      let refused = false;
 
       payload.on('data', (chunk: Buffer) => {
+        if (refused) return;
         size += chunk.byteLength;
+
+        if (size > MAX_UPLOAD_BYTES) {
+          refused = true;
+          payload.destroy();
+          done(Object.assign(new Error('body over the upload ceiling'), { statusCode: 413 }));
+          return;
+        }
+
         if (keptBytes >= MAX_BODY_BYTES) return;
 
         const room = MAX_BODY_BYTES - keptBytes;
@@ -78,8 +98,11 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis
         keptBytes += slice.byteLength;
       });
 
-      payload.on('error', done);
+      payload.on('error', (error) => {
+        if (!refused) done(error);
+      });
       payload.on('end', () => {
+        if (refused) return;
         done(null, { bytes: Buffer.concat(kept), size, truncated: size > MAX_BODY_BYTES });
       });
     });

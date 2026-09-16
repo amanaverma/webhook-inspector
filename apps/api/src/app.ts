@@ -29,6 +29,10 @@ export function buildApp(
     // one and records the proxy as the source of every captured request. Turned
     // on without a proxy in front, a client could spoof its own address.
     trustProxy: process.env.TRUST_PROXY === 'true',
+    // A sender that opens a connection and then stops writing holds a slot until
+    // this fires. Fastify leaves it off by default, which lets a handful of slow
+    // senders hold every connection the process has.
+    requestTimeout: 30_000,
     // Trusts the id a proxy already assigned, so one request keeps one id across services.
     genReqId: (request) => (request.headers['x-request-id'] as string) ?? randomUUID(),
   });
