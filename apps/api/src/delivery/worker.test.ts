@@ -137,9 +137,10 @@ describe('delivery worker', () => {
   it('records a transport failure with no status', async () => {
     respond = () => ({ status: 200 });
     const id = await capture('/unreachable', 'x', 'text/plain');
-    await db.update(deliveries).set({ targetUrl: 'http://127.0.0.1:1/nothing' }).where(eq(deliveries.requestId, id));
+    await db.update(bins).set({ forwardUrl: 'http://127.0.0.1:1/nothing' }).where(eq(bins.slug, slug));
 
     await runOnce(db);
+    await db.update(bins).set({ forwardUrl: target }).where(eq(bins.slug, slug));
 
     const [attempt] = await attemptsFor(id);
     expect(attempt?.state).toBe('failed');
@@ -165,6 +166,46 @@ describe('delivery worker', () => {
     await enqueue(db, id, target);
 
     expect(await attemptsFor(id)).toHaveLength(1);
+  });
+
+  it('retries a capture and a replay without displacing each other', async () => {
+    respond = () => ({ status: 500 });
+    const id = await capture('/two-chains', 'x', 'text/plain');
+    await runOnce(db);
+
+    await app.inject({ headers: { cookie }, method: 'POST', url: `/api/requests/${id}/replay` });
+    await runOnce(db);
+
+    const attempts = await attemptsFor(id);
+    const queued = attempts.filter((row) => row.state === 'pending');
+    expect(attempts.filter((row) => row.attempt === 1)).toHaveLength(2);
+    expect(queued).toHaveLength(2);
+    expect(new Set(queued.map((row) => row.chainKey)).size).toBe(2);
+  });
+
+  it('sends a queued retry to the forward URL as it stands now', async () => {
+    respond = () => ({ status: 500 });
+    const id = await capture('/moved', 'x', 'text/plain');
+    await runOnce(db);
+
+    try {
+      await db.update(bins).set({ forwardUrl: null }).where(eq(bins.slug, slug));
+      await db.update(deliveries).set({ nextAttemptAt: new Date() }).where(eq(deliveries.requestId, id));
+      await runOnce(db);
+      expect((await attemptsFor(id)).every((row) => row.state !== 'sending')).toBe(true);
+      expect(await attemptsFor(id)).toHaveLength(2);
+    } finally {
+      await db.update(bins).set({ forwardUrl: target }).where(eq(bins.slug, slug));
+    }
+
+    respond = () => ({ status: 200 });
+    await db.update(deliveries).set({ nextAttemptAt: new Date() }).where(eq(deliveries.requestId, id));
+    // Other rows in the shared queue can fill a batch, so drain rather than
+    // expecting this row on the first tick.
+    for (let tick = 0; tick < 5; tick++) await runOnce(db);
+
+    const sent = (await attemptsFor(id)).find((row) => row.state === 'sent');
+    expect(sent?.targetUrl).toBe(target);
   });
 
   it('replays on demand and sends again', async () => {

@@ -50,6 +50,13 @@
       "when": 1789497228313,
       "tag": "0006_light_sir_ram",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789581622569,
+      "tag": "0007_spooky_shape",
+      "breakpoints": true
     }
   ]
 }

@@ -94,6 +94,8 @@ export const deliveries = pgTable(
     responseStatus: integer('response_status'),
     durationMs: integer('duration_ms'),
     error: text('error'),
+    /** The chain of attempts this row belongs to: one per capture, and one per replay. */
+    chainKey: text('chain_key').notNull(),
     dedupeKey: text('dedupe_key').notNull().unique(),
     nextAttemptAt: timestamp('next_attempt_at', { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
