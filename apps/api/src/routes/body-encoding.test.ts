@@ -39,4 +39,12 @@ describe('encodeBody', () => {
   it('returns an empty string for an empty body', () => {
     expect(encodeBody(Buffer.alloc(0), 'application/json')).toEqual({ body: '', bodyEncoding: 'utf8' });
   });
+
+  it('keeps a byte order mark', () => {
+    const withBom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"a":1}')]);
+    const encoded = encodeBody(withBom, 'application/json');
+
+    expect(encoded.bodyEncoding).toBe('utf8');
+    expect(Buffer.from(encoded.body, 'utf8').equals(withBom)).toBe(true);
+  });
 });

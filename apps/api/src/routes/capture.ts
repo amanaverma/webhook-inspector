@@ -9,6 +9,16 @@ import { notifyNewRequest } from '../notify.js';
 
 const METHODS: HTTPMethods[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 
+/** A whole `type/subtype` header with its parameters, in the characters RFC 9110 allows. */
+const MEDIA_TYPE = /^[!#$%&'*+\-.^_`|~\w]+\/[!#$%&'*+\-.^_`|~\w]+\s*(;.*)?$/s;
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    /** The content type as sent, when it was not a media type Fastify would accept. */
+    sentContentType: string | null;
+  }
+}
+
 export const MAX_BODY_BYTES = 1_048_576;
 
 /**
@@ -42,6 +52,8 @@ function flattenHeaders(request: FastifyRequest): Record<string, string> {
     headers[key] = Array.isArray(value) ? value.join(', ') : value;
   }
 
+  if (request.sentContentType !== null) headers['content-type'] = request.sentContentType;
+
   if (headers.cookie !== undefined) {
     const kept = headers.cookie
       .split(';')
@@ -72,6 +84,19 @@ function flattenHeaders(request: FastifyRequest): Record<string, string> {
  */
 export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis | null): void {
   void app.register(async (scope) => {
+    // Fastify answers 415 for a header that is not a media type before any
+    // parser runs, which would drop exactly the malformed senders this endpoint
+    // exists to show. The header is replaced with one that parses and the
+    // original is kept for the stored row.
+    scope.decorateRequest('sentContentType', null);
+    scope.addHook('onRequest', async (request) => {
+      const sent = request.headers['content-type'];
+      if (sent === undefined || MEDIA_TYPE.test(sent)) return;
+
+      request.sentContentType = sent;
+      request.headers['content-type'] = 'application/octet-stream';
+    });
+
     scope.removeAllContentTypeParsers();
     scope.addContentTypeParser('*', (_request, payload, done) => {
       const kept: Buffer[] = [];
@@ -161,7 +186,7 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis
             body: body.bytes,
             bodySize: body.size,
             truncated: body.truncated,
-            contentType: request.headers['content-type'] ?? null,
+            contentType: request.sentContentType ?? request.headers['content-type'] ?? null,
             sourceIp: request.ip,
           })
           .returning({ id: requests.id, receivedAt: requests.receivedAt });

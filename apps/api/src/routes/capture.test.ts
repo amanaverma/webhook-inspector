@@ -143,6 +143,24 @@ describe('capture endpoint', () => {
     expect(app.server.requestTimeout).toBe(30_000);
   });
 
+  it('stores a request whose content type is not a media type', async () => {
+    for (const sent of ['json', '', 'a/b c']) {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/i/${slug}`,
+        headers: { 'content-type': sent },
+        payload: 'x',
+      });
+
+      expect(response.statusCode, sent).toBe(200);
+
+      const row = await latest();
+      expect(row.contentType, sent).toBe(sent);
+      expect(row.headers['content-type'], sent).toBe(sent);
+      expect(row.body.toString(), sent).toBe('x');
+    }
+  });
+
   it('keeps JSON parsing intact for the rest of the API', async () => {
     const response = await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'Still JSON' } });
     expect(response.statusCode).toBe(201);
