@@ -134,6 +134,32 @@ describe('failures reaching the caller', () => {
   });
 });
 
+describe('session cookie', () => {
+  it('is marked secure when the deployment says it is production', async () => {
+    const secure = buildApp(db, process.env.DATABASE_URL!, null, false, true);
+    await secure.ready();
+
+    try {
+      const email = `secure-${randomUUID()}@example.com`;
+      const response = await secure.inject({
+        method: 'POST',
+        url: '/api/auth/signup',
+        payload: { email, password: 'a-long-enough-password' },
+      });
+
+      expect(response.cookies.find((entry) => entry.name === 'wi_session')).toMatchObject({
+        secure: true,
+        httpOnly: true,
+        sameSite: 'Lax',
+      });
+
+      await db.delete(users).where(eq(users.email, email));
+    } finally {
+      await secure.close();
+    }
+  });
+});
+
 describe('signup limit', () => {
   it('refuses more signups than the bucket holds', async () => {
     const remoteAddress = '198.51.100.9';

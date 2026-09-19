@@ -1,6 +1,6 @@
 import type { Db } from '@wi/db';
 import type { Redis } from 'ioredis';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { STATUS_CODES } from 'node:http';
 import { sql } from 'drizzle-orm';
 import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
@@ -11,6 +11,15 @@ import { registerCaptureRoutes } from './routes/capture.js';
 import { registerReadRoutes } from './routes/read.js';
 import { registerStreamRoutes } from './routes/stream.js';
 import { collectMetrics } from './retention.js';
+
+/** Compares in a time that does not depend on how much of the two strings match. */
+function matches(sent: string | undefined, expected: string): boolean {
+  if (sent === undefined) return false;
+
+  const a = Buffer.from(sent);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 /** Cuts the values a failed statement carried, which are whatever the caller sent. */
 function withoutValues(message: string): string {
@@ -29,6 +38,7 @@ export function buildApp(
   databaseUrl = process.env.DATABASE_URL ?? '',
   redis: Redis | null = null,
   trustProxy: false | string = false,
+  secureCookies = false,
 ): FastifyInstance {
   const app = Fastify({
     logger: process.env.NODE_ENV === 'test' ? false : { level: process.env.LOG_LEVEL ?? 'info' },
@@ -84,13 +94,13 @@ export function buildApp(
     // Open when no token is set, which suits local use; a deployment sets one
     // and gives it to whatever scrapes this.
     const expected = process.env.METRICS_TOKEN;
-    if (expected && request.headers.authorization !== `Bearer ${expected}`) {
+    if (expected && !matches(request.headers.authorization, `Bearer ${expected}`)) {
       return reply.code(401).send({ error: 'unauthenticated' });
     }
 
     return collectMetrics(db);
   });
-  registerAuthRoutes(app, db, redis);
+  registerAuthRoutes(app, db, redis, secureCookies);
   registerBinRoutes(app, db);
   registerCaptureRoutes(app, db, redis);
   registerReadRoutes(app, db);

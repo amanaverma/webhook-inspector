@@ -27,11 +27,11 @@ const credentials = z.object({
   password: z.string().min(10).max(200),
 });
 
-function setSessionCookie(reply: FastifyReply, token: string, expiresAt: Date): void {
+function setSessionCookie(reply: FastifyReply, token: string, expiresAt: Date, secure: boolean): void {
   reply.setCookie(COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure,
     path: '/',
     expires: expiresAt,
   });
@@ -43,7 +43,12 @@ function setSessionCookie(reply: FastifyReply, token: string, expiresAt: Date): 
  * Login answers the same 401 whether the email is unknown or the password is
  * wrong, so the response cannot be used to learn which addresses have accounts.
  */
-export function registerAuthRoutes(app: FastifyInstance, db: Db, redis: Redis | null = null): void {
+export function registerAuthRoutes(
+  app: FastifyInstance,
+  db: Db,
+  redis: Redis | null = null,
+  secureCookies = false,
+): void {
   app.post('/api/auth/signup', async (request, reply) => {
     const parsed = credentials.safeParse(request.body ?? {});
     if (!parsed.success) {
@@ -73,7 +78,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, redis: Redis | 
     if (!user) return reply.code(409).send({ error: 'email_taken' });
 
     const { token, expiresAt } = await createSession(db, user.id);
-    setSessionCookie(reply, token, expiresAt);
+    setSessionCookie(reply, token, expiresAt, secureCookies);
     return reply.code(201).send(user);
   });
 
@@ -111,7 +116,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, redis: Redis | 
     if (!user || !ok) return reply.code(401).send({ error: 'invalid_credentials' });
 
     const { token, expiresAt } = await createSession(db, user.id);
-    setSessionCookie(reply, token, expiresAt);
+    setSessionCookie(reply, token, expiresAt, secureCookies);
     return { id: user.id, email: user.email };
   });
 

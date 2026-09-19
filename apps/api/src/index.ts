@@ -1,10 +1,11 @@
 import { createDb } from '@wi/db';
 import { Redis } from 'ioredis';
 import { buildApp } from './app.js';
-import { loadConfig } from './config.js';
+import { assertApiConfig, loadConfig } from './config.js';
 import { REDIS_OPTIONS } from './rate-limit.js';
 
 const config = loadConfig();
+assertApiConfig(config);
 const db = createDb(config.databaseUrl);
 const redis = config.redisUrl ? new Redis(config.redisUrl, REDIS_OPTIONS) : null;
 
@@ -14,7 +15,7 @@ redis?.on('error', (error: Error) => {
   app.log.warn({ err: error }, 'redis unavailable, capture continues unlimited');
 });
 
-const app = buildApp(db, config.databaseUrl, redis, config.trustProxy);
+const app = buildApp(db, config.databaseUrl, redis, config.trustProxy, config.production);
 
 async function shutdown(signal: string): Promise<void> {
   app.log.info({ signal }, 'shutting down');
