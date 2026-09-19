@@ -1,9 +1,10 @@
+import { randomUUID } from 'node:crypto';
 import { bins, createDb, requests, users } from '@wi/db';
 import { eq, sql } from 'drizzle-orm';
 import { Redis } from 'ioredis';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from './app.js';
-import { CAPACITY, LOGIN_CAPACITY, spendToken } from './rate-limit.js';
+import { CAPACITY, LOGIN_CAPACITY, REDIS_OPTIONS, SIGNUP_CAPACITY, spendToken } from './rate-limit.js';
 import { collectMetrics, pruneRequests } from './retention.js';
 import { signedInCookie } from './test-auth.js';
 
@@ -77,6 +78,58 @@ describe('rate limiting', () => {
     const response = await app.inject({ method: 'POST', url: `/i/${slug}/fine`, payload: 'x' });
     expect(response.statusCode).toBe(200);
     expect(Number(response.headers['x-ratelimit-remaining'])).toBeGreaterThan(0);
+  });
+});
+
+describe('signup limit', () => {
+  it('refuses more signups than the bucket holds', async () => {
+    const remoteAddress = '198.51.100.9';
+    await redis.del(`rl:signup:${remoteAddress}`);
+
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < SIGNUP_CAPACITY + 1; attempt++) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/auth/signup',
+        payload: { email: `flood-${randomUUID()}@example.com`, password: 'a-long-enough-password' },
+        remoteAddress,
+      });
+      statuses.push(response.statusCode);
+    }
+
+    expect(statuses.slice(0, SIGNUP_CAPACITY).every((code) => code === 201)).toBe(true);
+    expect(statuses.at(-1)).toBe(429);
+
+    await redis.del(`rl:signup:${remoteAddress}`);
+    await db.delete(users).where(sql`email like 'flood-%@example.com'`);
+  });
+});
+
+describe('redis outage', () => {
+  it('queues nothing while the connection is down', () => {
+    // The stall this prevents only appears once ioredis has grown its retry
+    // delay, which takes longer than a test should, so the option is asserted
+    // directly and the call below covers the part that can be measured.
+    expect(REDIS_OPTIONS.enableOfflineQueue).toBe(false);
+    expect(REDIS_OPTIONS.commandTimeout).toBeLessThanOrEqual(1_000);
+  });
+
+  it('allows a request rather than waiting for a connection that is down', async () => {
+    const offline = new Redis(6_399, '127.0.0.1', REDIS_OPTIONS);
+    offline.on('error', () => {});
+
+    try {
+      // Two in a row, the way a capture spends one bucket and then another.
+      const started = Date.now();
+      const first = await spendToken(offline, 'rl:outage');
+      const second = await spendToken(offline, 'rl:outage');
+
+      expect(first.allowed).toBe(true);
+      expect(second.allowed).toBe(true);
+      expect(Date.now() - started).toBeLessThan(3_000);
+    } finally {
+      offline.disconnect();
+    }
   });
 });
 

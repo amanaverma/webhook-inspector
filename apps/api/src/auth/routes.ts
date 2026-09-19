@@ -9,6 +9,8 @@ import {
   LOGIN_IP_CAPACITY,
   LOGIN_IP_REFILL_PER_SECOND,
   LOGIN_REFILL_PER_SECOND,
+  SIGNUP_CAPACITY,
+  SIGNUP_REFILL_PER_SECOND,
   spendToken,
 } from '../rate-limit.js';
 import {
@@ -46,6 +48,13 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, redis: Redis | 
     const parsed = credentials.safeParse(request.body ?? {});
     if (!parsed.success) {
       return reply.code(400).send({ error: 'invalid_body', details: z.treeifyError(parsed.error) });
+    }
+
+    // Spent before the hash, since hashing is the cost an unlimited signup
+    // endpoint hands to anyone who asks.
+    if (redis) {
+      const limit = await spendToken(redis, `rl:signup:${request.ip}`, SIGNUP_CAPACITY, SIGNUP_REFILL_PER_SECOND);
+      if (!limit.allowed) return reply.code(429).send({ error: 'too_many_attempts' });
     }
 
     const email = parsed.data.email.toLowerCase();
