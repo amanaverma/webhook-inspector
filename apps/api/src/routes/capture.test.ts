@@ -161,6 +161,37 @@ describe('capture endpoint', () => {
     }
   });
 
+  it('stores no source address when the proxy sends something that is not one', async () => {
+    const proxied = buildApp(db, process.env.DATABASE_URL!, null, 'loopback');
+    await proxied.ready();
+
+    try {
+      for (const forwarded of ['unknown', '203.0.113.5:4711']) {
+        const response = await proxied.inject({
+          method: 'POST',
+          url: `/i/${slug}`,
+          headers: { 'x-forwarded-for': forwarded, 'content-type': 'text/plain' },
+          payload: 'x',
+        });
+
+        expect(response.statusCode, forwarded).toBe(200);
+        expect((await latest()).sourceIp, forwarded).toBeNull();
+      }
+
+      const real = await proxied.inject({
+        method: 'POST',
+        url: `/i/${slug}`,
+        headers: { 'x-forwarded-for': '203.0.113.5', 'content-type': 'text/plain' },
+        payload: 'x',
+      });
+
+      expect(real.statusCode).toBe(200);
+      expect((await latest()).sourceIp).toBe('203.0.113.5');
+    } finally {
+      await proxied.close();
+    }
+  });
+
   it('keeps JSON parsing intact for the rest of the API', async () => {
     const response = await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'Still JSON' } });
     expect(response.statusCode).toBe(201);

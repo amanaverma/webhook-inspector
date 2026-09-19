@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { bins, requests, type Db } from '@wi/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest, HTTPMethods } from 'fastify';
@@ -187,7 +188,9 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis
             bodySize: body.size,
             truncated: body.truncated,
             contentType: request.sentContentType ?? request.headers['content-type'] ?? null,
-            sourceIp: request.ip,
+            // A proxy may pass something that is not an address, such as
+            // `unknown` or a host and port, which the column would refuse.
+            sourceIp: isIP(request.ip) ? request.ip : null,
           })
           .returning({ id: requests.id, receivedAt: requests.receivedAt });
 

@@ -13,7 +13,7 @@ redis?.on('error', (error: Error) => {
   app.log.warn({ err: error }, 'redis unavailable, capture continues unlimited');
 });
 
-const app = buildApp(db, config.databaseUrl, redis);
+const app = buildApp(db, config.databaseUrl, redis, config.trustProxy);
 
 async function shutdown(signal: string): Promise<void> {
   app.log.info({ signal }, 'shutting down');

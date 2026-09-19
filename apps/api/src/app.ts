@@ -21,14 +21,14 @@ export function buildApp(
   db: Db,
   databaseUrl = process.env.DATABASE_URL ?? '',
   redis: Redis | null = null,
+  trustProxy: false | string = false,
 ): FastifyInstance {
   const app = Fastify({
     logger: process.env.NODE_ENV === 'test' ? false : { level: process.env.LOG_LEVEL ?? 'info' },
     // Off unless a deployment says otherwise. Behind a proxy every client
     // otherwise shares one address, which collapses the rate limit buckets into
-    // one and records the proxy as the source of every captured request. Turned
-    // on without a proxy in front, a client could spoof its own address.
-    trustProxy: process.env.TRUST_PROXY === 'true',
+    // one and records the proxy as the source of every captured request.
+    trustProxy,
     // A sender that opens a connection and then stops writing holds a slot until
     // this fires. Fastify leaves it off by default, which lets a handful of slow
     // senders hold every connection the process has.
