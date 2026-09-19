@@ -71,7 +71,9 @@ export function deliveryUrl(claimed: ClaimedDelivery): string | null {
  * Sends one claimed delivery to its target.
  *
  * Returns the response status, or a null status with the error text when the
- * target could not be reached or did not answer within the timeout.
+ * target could not be reached or did not answer within the timeout. The
+ * response body is discarded unread, so a target that answers and then trickles
+ * its body still counts as the answer it gave.
  *
  * The target is checked again here rather than trusting the row, because a row
  * may hold a URL that was never checked. The connection then resolves the host
@@ -106,7 +108,7 @@ export async function deliver(claimed: ClaimedDelivery): Promise<Attempt> {
       dispatcher,
       ...(claimed.body.byteLength > 0 ? { body: new Uint8Array(claimed.body) } : {}),
     });
-    await response.arrayBuffer();
+    void response.body?.cancel();
     return { status: response.status, durationMs: Date.now() - started, error: null };
   } catch (error) {
     return {
