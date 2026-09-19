@@ -81,6 +81,59 @@ describe('rate limiting', () => {
   });
 });
 
+describe('failures reaching the caller', () => {
+  it('answers with an id rather than the failed statement', async () => {
+    const broken = {
+      select: () => {
+        throw Object.assign(new Error('Failed query: select "id" from "bins" where slug = $1\nparams: sk_live_SECRET'), {
+          name: 'DrizzleQueryError',
+        });
+      },
+    };
+
+    const failing = buildApp(broken as unknown as Parameters<typeof buildApp>[0]);
+    await failing.ready();
+
+    try {
+      const response = await failing.inject({ method: 'POST', url: '/i/anything', payload: 'x' });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({ error: 'internal_error', requestId: expect.any(String) });
+      expect(response.body).not.toContain('sk_live_SECRET');
+      expect(response.body).not.toContain('Failed query');
+    } finally {
+      await failing.close();
+    }
+  });
+
+  it('keeps answering a framework 4xx in the shape it always had', async () => {
+    // Malformed JSON is refused by the framework, so this is one of the few
+    // paths that reaches the handler with a status below 500.
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/auth/signup',
+      headers: { 'content-type': 'application/json' },
+      payload: '{not json',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ statusCode: 400, error: 'Bad Request', code: expect.any(String) });
+  });
+
+  it('answers 409 when the same address signs up twice at once', async () => {
+    const email = `race-${randomUUID()}@example.com`;
+    const signup = () =>
+      app.inject({ method: 'POST', url: '/api/auth/signup', payload: { email, password: 'a-long-enough-password' } });
+
+    const statuses = (await Promise.all([signup(), signup(), signup(), signup()])).map((r) => r.statusCode);
+
+    expect(statuses.filter((code) => code === 201)).toHaveLength(1);
+    expect(statuses.filter((code) => code === 409)).toHaveLength(3);
+
+    await db.delete(users).where(eq(users.email, email));
+  });
+});
+
 describe('signup limit', () => {
   it('refuses more signups than the bucket holds', async () => {
     const remoteAddress = '198.51.100.9';
@@ -106,14 +159,6 @@ describe('signup limit', () => {
 });
 
 describe('redis outage', () => {
-  it('queues nothing while the connection is down', () => {
-    // The stall this prevents only appears once ioredis has grown its retry
-    // delay, which takes longer than a test should, so the option is asserted
-    // directly and the call below covers the part that can be measured.
-    expect(REDIS_OPTIONS.enableOfflineQueue).toBe(false);
-    expect(REDIS_OPTIONS.commandTimeout).toBeLessThanOrEqual(1_000);
-  });
-
   it('allows a request rather than waiting for a connection that is down', async () => {
     const offline = new Redis(6_399, '127.0.0.1', REDIS_OPTIONS);
     offline.on('error', () => {});

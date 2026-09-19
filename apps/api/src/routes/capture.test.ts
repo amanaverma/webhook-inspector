@@ -192,6 +192,23 @@ describe('capture endpoint', () => {
     }
   });
 
+  it('keeps two keys that differ only by a NUL apart', async () => {
+    const response = await app.inject({ method: 'POST', url: `/i/${slug}?a%00=first&a=second`, payload: 'x' });
+
+    expect(response.statusCode).toBe(200);
+    expect((await latest()).query).toEqual({ 'a%00': 'first', a: 'second' });
+  });
+
+  it('stores a query holding a NUL character', async () => {
+    const response = await app.inject({ method: 'POST', url: `/i/${slug}?a=%00b&c=1`, payload: 'x' });
+
+    expect(response.statusCode).toBe(200);
+
+    const row = await latest();
+    expect(row.query).toEqual({ a: '%00b', c: '1' });
+    expect(row.rawQuery).toBe('a=%00b&c=1');
+  });
+
   it('keeps JSON parsing intact for the rest of the API', async () => {
     const response = await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'Still JSON' } });
     expect(response.statusCode).toBe(201);

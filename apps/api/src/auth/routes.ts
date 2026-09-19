@@ -61,12 +61,18 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, redis: Redis | 
     const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
     if (existing) return reply.code(409).send({ error: 'email_taken' });
 
+    const passwordHash = await hashPassword(parsed.data.password);
     const [user] = await db
       .insert(users)
-      .values({ email, passwordHash: await hashPassword(parsed.data.password) })
+      .values({ email, passwordHash })
+      .onConflictDoNothing({ target: users.email })
       .returning({ id: users.id, email: users.email });
 
-    const { token, expiresAt } = await createSession(db, user!.id);
+    // Two signups for one address can both pass the check above, and the second
+    // insert then writes nothing.
+    if (!user) return reply.code(409).send({ error: 'email_taken' });
+
+    const { token, expiresAt } = await createSession(db, user.id);
     setSessionCookie(reply, token, expiresAt);
     return reply.code(201).send(user);
   });

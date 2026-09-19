@@ -1,8 +1,9 @@
 import type { Db } from '@wi/db';
 import type { Redis } from 'ioredis';
 import { randomUUID } from 'node:crypto';
+import { STATUS_CODES } from 'node:http';
 import { sql } from 'drizzle-orm';
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
 import { registerAuth } from './auth/plugin.js';
 import { registerAuthRoutes } from './auth/routes.js';
 import { registerBinRoutes } from './routes/bins.js';
@@ -10,6 +11,12 @@ import { registerCaptureRoutes } from './routes/capture.js';
 import { registerReadRoutes } from './routes/read.js';
 import { registerStreamRoutes } from './routes/stream.js';
 import { collectMetrics } from './retention.js';
+
+/** Cuts the values a failed statement carried, which are whatever the caller sent. */
+function withoutValues(message: string): string {
+  const at = message.indexOf('\nparams:');
+  return at === -1 ? message : message.slice(0, at);
+}
 
 /**
  * Builds the Fastify instance with every route registered.
@@ -35,6 +42,24 @@ export function buildApp(
     requestTimeout: 30_000,
     // Trusts the id a proxy already assigned, so one request keeps one id across services.
     genReqId: (request) => (request.headers['x-request-id'] as string) ?? randomUUID(),
+  });
+
+  // A 5xx answers with a request id only. Its message is logged, never sent,
+  // because the database driver puts the failed statement and the values it
+  // carried into that message. A 4xx keeps the shape the framework sends.
+  app.setErrorHandler((error: FastifyError, request, reply) => {
+    const status = error.statusCode ?? 500;
+    if (status < 500) {
+      return reply
+        .code(status)
+        .send({ statusCode: status, code: error.code, error: STATUS_CODES[status], message: error.message });
+    }
+
+    request.log.error(
+      { code: error.code, name: error.name, message: withoutValues(error.message), stack: error.stack },
+      'request failed',
+    );
+    return reply.code(status).send({ error: 'internal_error', requestId: request.id });
   });
 
   // Echoes the id so a caller can quote it when reporting a problem.
