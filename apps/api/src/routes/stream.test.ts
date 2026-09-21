@@ -1,8 +1,13 @@
+import { connect } from 'node:net';
 import { bins, createDb } from '@wi/db';
 import { eq } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildApp } from '../app.js';
 import { signedInCookie } from '../test-auth.js';
+
+const originalSetInterval = globalThis.setInterval;
+const originalClearInterval = globalThis.clearInterval;
+const originalSetTimeout = globalThis.setTimeout;
 
 const db = createDb(process.env.DATABASE_URL!);
 const app = buildApp(db);
@@ -132,5 +137,47 @@ describe('stream cleanup', () => {
     second.stop();
 
     expect(second.events.map((event) => event.data.path)).toEqual([`/i/${slug}/after-disconnect`]);
+  });
+});
+
+describe('a client that leaves during setup', () => {
+  it('leaves no heartbeat and no subscriber behind', async () => {
+    // Every stream runs one heartbeat, so a timer still running afterwards is a
+    // stream still subscribed.
+    const live = new Set<unknown>();
+    const setSpy = vi.spyOn(globalThis, 'setInterval').mockImplementation(((
+      ...args: Parameters<typeof setInterval>
+    ) => {
+      const timer = originalSetInterval(...args);
+      live.add(timer);
+      return timer;
+    }) as typeof setInterval);
+    const clearSpy = vi.spyOn(globalThis, 'clearInterval').mockImplementation(((
+      timer: Parameters<typeof clearInterval>[0],
+    ) => {
+      live.delete(timer);
+      originalClearInterval(timer);
+    }) as typeof clearInterval);
+
+    try {
+      const port = (app.server.address() as { port: number }).port;
+
+      for (let i = 0; i < 5; i++) {
+        await new Promise<void>((resolve) => {
+          const socket = connect(port, '127.0.0.1', () => {
+            socket.write(`GET /api/bins/${slug}/stream HTTP/1.1\r\nHost: localhost\r\ncookie: ${cookie}\r\n\r\n`);
+            socket.destroy();
+            resolve();
+          });
+        });
+      }
+
+      await new Promise((resolve) => originalSetTimeout(resolve, 300));
+
+      expect(live.size).toBe(0);
+    } finally {
+      setSpy.mockRestore();
+      clearSpy.mockRestore();
+    }
   });
 });

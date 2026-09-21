@@ -9,6 +9,8 @@ import {
   LOGIN_IP_CAPACITY,
   LOGIN_IP_REFILL_PER_SECOND,
   LOGIN_REFILL_PER_SECOND,
+  SIGNUP_CAPACITY,
+  SIGNUP_REFILL_PER_SECOND,
   spendToken,
 } from '../rate-limit.js';
 import {
@@ -25,11 +27,11 @@ const credentials = z.object({
   password: z.string().min(10).max(200),
 });
 
-function setSessionCookie(reply: FastifyReply, token: string, expiresAt: Date): void {
+function setSessionCookie(reply: FastifyReply, token: string, expiresAt: Date, secure: boolean): void {
   reply.setCookie(COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    secure,
     path: '/',
     expires: expiresAt,
   });
@@ -41,24 +43,42 @@ function setSessionCookie(reply: FastifyReply, token: string, expiresAt: Date): 
  * Login answers the same 401 whether the email is unknown or the password is
  * wrong, so the response cannot be used to learn which addresses have accounts.
  */
-export function registerAuthRoutes(app: FastifyInstance, db: Db, redis: Redis | null = null): void {
+export function registerAuthRoutes(
+  app: FastifyInstance,
+  db: Db,
+  redis: Redis | null = null,
+  secureCookies = false,
+): void {
   app.post('/api/auth/signup', async (request, reply) => {
     const parsed = credentials.safeParse(request.body ?? {});
     if (!parsed.success) {
       return reply.code(400).send({ error: 'invalid_body', details: z.treeifyError(parsed.error) });
     }
 
+    // Spent before the hash, since hashing is the cost an unlimited signup
+    // endpoint hands to anyone who asks.
+    if (redis) {
+      const limit = await spendToken(redis, `rl:signup:${request.ip}`, SIGNUP_CAPACITY, SIGNUP_REFILL_PER_SECOND);
+      if (!limit.allowed) return reply.code(429).send({ error: 'too_many_attempts' });
+    }
+
     const email = parsed.data.email.toLowerCase();
     const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
     if (existing) return reply.code(409).send({ error: 'email_taken' });
 
+    const passwordHash = await hashPassword(parsed.data.password);
     const [user] = await db
       .insert(users)
-      .values({ email, passwordHash: await hashPassword(parsed.data.password) })
+      .values({ email, passwordHash })
+      .onConflictDoNothing({ target: users.email })
       .returning({ id: users.id, email: users.email });
 
-    const { token, expiresAt } = await createSession(db, user!.id);
-    setSessionCookie(reply, token, expiresAt);
+    // Two signups for one address can both pass the check above, and the second
+    // insert then writes nothing.
+    if (!user) return reply.code(409).send({ error: 'email_taken' });
+
+    const { token, expiresAt } = await createSession(db, user.id);
+    setSessionCookie(reply, token, expiresAt, secureCookies);
     return reply.code(201).send(user);
   });
 
@@ -96,7 +116,7 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, redis: Redis | 
     if (!user || !ok) return reply.code(401).send({ error: 'invalid_credentials' });
 
     const { token, expiresAt } = await createSession(db, user.id);
-    setSessionCookie(reply, token, expiresAt);
+    setSessionCookie(reply, token, expiresAt, secureCookies);
     return { id: user.id, email: user.email };
   });
 
