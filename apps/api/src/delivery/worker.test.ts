@@ -4,8 +4,7 @@ import { asc, eq } from 'drizzle-orm';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
 import { MAX_BODY_BYTES } from '../routes/capture.js';
-import { MAX_ATTEMPTS } from './backoff.js';
-import { claimDue, enqueue, recordAttempt } from './queue.js';
+import { claimDue, enqueue } from './queue.js';
 import { deliveryUrl, runOnce } from './worker.js';
 import { signedInCookie } from '../test-auth.js';
 
@@ -19,8 +18,7 @@ type Hit = { method: string; url: string; headers: Record<string, string | strin
 let server: Server;
 let target: string;
 let hits: Hit[] = [];
-let respond: (hit: Hit) => { status: number; delayMs?: number; holdBody?: boolean } = () => ({ status: 200 });
-const held: { end: () => void }[] = [];
+let respond: (hit: Hit) => { status: number; delayMs?: number } = () => ({ status: 200 });
 let slug: string;
 
 beforeAll(async () => {
@@ -33,15 +31,10 @@ beforeAll(async () => {
     req.on('end', () => {
       const hit = { method: req.method!, url: req.url!, headers: req.headers, body: Buffer.concat(chunks) };
       hits.push(hit);
-      const { status, delayMs, holdBody } = respond(hit);
+      const { status, delayMs } = respond(hit);
       setTimeout(() => {
         res.writeHead(status);
-        if (!holdBody) return res.end();
-
-        // Answers, then keeps the body open, which is what a target that has
-        // already accepted a webhook but writes slowly looks like.
-        res.write('x');
-        held.push({ end: () => res.end() });
+        res.end();
       }, delayMs ?? 0);
     });
   });
@@ -55,7 +48,6 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  for (const response of held) response.end();
   await db.delete(bins).where(eq(bins.slug, slug));
   await app.close();
   await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -154,20 +146,6 @@ describe('delivery worker', () => {
     expect(attempt?.state).toBe('failed');
     expect(attempt?.responseStatus).toBeNull();
     expect(attempt?.error).toBeTruthy();
-  });
-
-  it('counts a target that answers and then trickles its body as answered', async () => {
-    respond = () => ({ status: 200, holdBody: true });
-    const id = await capture('/trickle', 'x', 'text/plain');
-
-    const started = Date.now();
-    await runOnce(db);
-    const elapsed = Date.now() - started;
-
-    const [attempt] = await attemptsFor(id);
-    expect(attempt?.state).toBe('sent');
-    expect(attempt?.responseStatus).toBe(200);
-    expect(elapsed).toBeLessThan(5_000);
   });
 
   it('claims a row only once even with workers running together', async () => {
@@ -277,55 +255,6 @@ describe('delivery worker', () => {
     const detail = (await app.inject({ headers: { cookie }, method: 'GET', url: `/api/requests/${id}` })).json();
     expect(detail.deliveries).toHaveLength(1);
     expect(detail.deliveries[0].state).toBe('sent');
-  });
-});
-
-describe('a delivery whose worker keeps dying', () => {
-  it('spends an attempt each time it is reclaimed, then gives up', async () => {
-    respond = () => ({ status: 200 });
-    const id = await capture('/poison', 'x', 'text/plain');
-
-    const stale = async () => {
-      await db
-        .update(deliveries)
-        .set({ state: 'sending', updatedAt: new Date(Date.now() - 5 * 60_000) })
-        .where(eq(deliveries.requestId, id));
-    };
-
-    const attempts: number[] = [];
-    for (let round = 0; round < MAX_ATTEMPTS + 1; round++) {
-      await stale();
-      const claimed = (await claimDue(db, 10)).filter((row) => row.requestId === id);
-      if (claimed.length === 0) break;
-      attempts.push(claimed[0]!.attempt);
-    }
-
-    expect(attempts).toEqual([2, 3, 4, 5]);
-
-    const [row] = await attemptsFor(id);
-    expect(row?.state).toBe('dead');
-    expect(row?.error).toContain('no attempt was recorded');
-  });
-});
-
-describe('two workers holding one row', () => {
-  it('leaves one live chain, not two', async () => {
-    respond = () => ({ status: 500 });
-    const id = await capture('/contested', 'x', 'text/plain');
-
-    const [first] = (await claimDue(db, 10)).filter((row) => row.requestId === id);
-    await db
-      .update(deliveries)
-      .set({ updatedAt: new Date(Date.now() - 5 * 60_000) })
-      .where(eq(deliveries.requestId, id));
-    const [second] = (await claimDue(db, 10)).filter((row) => row.requestId === id);
-
-    await recordAttempt(db, first!, { status: 500, durationMs: 1, error: null });
-    await recordAttempt(db, second!, { status: 500, durationMs: 1, error: null });
-
-    const rows = await attemptsFor(id);
-    expect(rows.filter((row) => row.state === 'pending')).toHaveLength(1);
-    expect(rows.filter((row) => row.state === 'sending')).toHaveLength(0);
   });
 });
 

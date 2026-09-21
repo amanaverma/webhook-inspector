@@ -18,9 +18,6 @@ type Subscriber = (requestId: string) => void;
  * `Last-Event-ID` receives the requests it missed, up to 100, before the live
  * feed resumes.
  *
- * Each stream is removed when its client disconnects, including one that leaves
- * before the first event is written.
- *
  * Registered as a plugin so the listen connection is opened during
  * `app.ready()` rather than on the first request.
  */
@@ -114,11 +111,6 @@ export function registerStreamRoutes(app: FastifyInstance, db: Db, databaseUrl: 
             request.log.error({ err: error, requestId }, 'live tail could not read a request');
           });
       };
-
-      // A client that leaves during the lookup or the backfill has already had
-      // its close event, and it never fires twice, so anything registered after
-      // this point would stay registered for the life of the process.
-      if (request.raw.destroyed) return reply;
 
       const entry = { end: () => reply.raw.end() };
       open.add(entry);

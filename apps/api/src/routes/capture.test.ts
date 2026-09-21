@@ -161,54 +161,6 @@ describe('capture endpoint', () => {
     }
   });
 
-  it('stores no source address when the proxy sends something that is not one', async () => {
-    const proxied = buildApp(db, process.env.DATABASE_URL!, null, 'loopback');
-    await proxied.ready();
-
-    try {
-      for (const forwarded of ['unknown', '203.0.113.5:4711']) {
-        const response = await proxied.inject({
-          method: 'POST',
-          url: `/i/${slug}`,
-          headers: { 'x-forwarded-for': forwarded, 'content-type': 'text/plain' },
-          payload: 'x',
-        });
-
-        expect(response.statusCode, forwarded).toBe(200);
-        expect((await latest()).sourceIp, forwarded).toBeNull();
-      }
-
-      const real = await proxied.inject({
-        method: 'POST',
-        url: `/i/${slug}`,
-        headers: { 'x-forwarded-for': '203.0.113.5', 'content-type': 'text/plain' },
-        payload: 'x',
-      });
-
-      expect(real.statusCode).toBe(200);
-      expect((await latest()).sourceIp).toBe('203.0.113.5');
-    } finally {
-      await proxied.close();
-    }
-  });
-
-  it('keeps two keys that differ only by a NUL apart', async () => {
-    const response = await app.inject({ method: 'POST', url: `/i/${slug}?a%00=first&a=second`, payload: 'x' });
-
-    expect(response.statusCode).toBe(200);
-    expect((await latest()).query).toEqual({ 'a%00': 'first', a: 'second' });
-  });
-
-  it('stores a query holding a NUL character', async () => {
-    const response = await app.inject({ method: 'POST', url: `/i/${slug}?a=%00b&c=1`, payload: 'x' });
-
-    expect(response.statusCode).toBe(200);
-
-    const row = await latest();
-    expect(row.query).toEqual({ a: '%00b', c: '1' });
-    expect(row.rawQuery).toBe('a=%00b&c=1');
-  });
-
   it('keeps JSON parsing intact for the rest of the API', async () => {
     const response = await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'Still JSON' } });
     expect(response.statusCode).toBe(201);

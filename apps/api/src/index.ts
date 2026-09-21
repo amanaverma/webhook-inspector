@@ -1,13 +1,11 @@
 import { createDb } from '@wi/db';
 import { Redis } from 'ioredis';
 import { buildApp } from './app.js';
-import { assertApiConfig, loadConfig } from './config.js';
-import { REDIS_OPTIONS } from './rate-limit.js';
+import { loadConfig } from './config.js';
 
 const config = loadConfig();
-assertApiConfig(config);
 const db = createDb(config.databaseUrl);
-const redis = config.redisUrl ? new Redis(config.redisUrl, REDIS_OPTIONS) : null;
+const redis = config.redisUrl ? new Redis(config.redisUrl, { maxRetriesPerRequest: 2 }) : null;
 
 // A rate limiter that cannot reach Redis lets requests through, so a connection
 // error here must not take the process down.
@@ -15,7 +13,7 @@ redis?.on('error', (error: Error) => {
   app.log.warn({ err: error }, 'redis unavailable, capture continues unlimited');
 });
 
-const app = buildApp(db, config.databaseUrl, redis, config.trustProxy, config.production);
+const app = buildApp(db, config.databaseUrl, redis);
 
 async function shutdown(signal: string): Promise<void> {
   app.log.info({ signal }, 'shutting down');

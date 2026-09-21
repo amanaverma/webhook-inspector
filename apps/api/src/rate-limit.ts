@@ -1,29 +1,11 @@
 import type { Redis } from 'ioredis';
 
-/**
- * Client options for the limiter's Redis connection.
- *
- * A command fails at once while the connection is down rather than waiting in
- * an offline queue, which is what lets `spendToken` allow the request instead
- * of holding it for the length of an outage.
- */
-export const REDIS_OPTIONS = {
-  enableOfflineQueue: false,
-  maxRetriesPerRequest: 1,
-  commandTimeout: 500,
-  connectTimeout: 1_000,
-} as const;
-
 export const CAPACITY = 120;
 export const REFILL_PER_SECOND = 2;
 
 /** Login is far rarer than capture, so its buckets are small and refill slowly. */
 export const LOGIN_CAPACITY = 10;
 export const LOGIN_REFILL_PER_SECOND = 0.05;
-
-/** Each signup costs a password hash and creates an account, so the bucket is smaller than capture's. */
-export const SIGNUP_CAPACITY = 30;
-export const SIGNUP_REFILL_PER_SECOND = 0.5;
 
 /** A single client may work through several accounts before it is stopped. */
 export const LOGIN_IP_CAPACITY = 40;

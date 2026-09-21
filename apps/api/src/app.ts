@@ -1,9 +1,8 @@
 import type { Db } from '@wi/db';
 import type { Redis } from 'ioredis';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
-import { STATUS_CODES } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
-import Fastify, { type FastifyError, type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyInstance } from 'fastify';
 import { registerAuth } from './auth/plugin.js';
 import { registerAuthRoutes } from './auth/routes.js';
 import { registerBinRoutes } from './routes/bins.js';
@@ -11,21 +10,6 @@ import { registerCaptureRoutes } from './routes/capture.js';
 import { registerReadRoutes } from './routes/read.js';
 import { registerStreamRoutes } from './routes/stream.js';
 import { collectMetrics } from './retention.js';
-
-/** Compares in a time that does not depend on how much of the two strings match. */
-function matches(sent: string | undefined, expected: string): boolean {
-  if (sent === undefined) return false;
-
-  const a = Buffer.from(sent);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
-/** Cuts the values a failed statement carried, which are whatever the caller sent. */
-function withoutValues(message: string): string {
-  const at = message.indexOf('\nparams:');
-  return at === -1 ? message : message.slice(0, at);
-}
 
 /**
  * Builds the Fastify instance with every route registered.
@@ -37,39 +21,20 @@ export function buildApp(
   db: Db,
   databaseUrl = process.env.DATABASE_URL ?? '',
   redis: Redis | null = null,
-  trustProxy: false | string = false,
-  secureCookies = false,
 ): FastifyInstance {
   const app = Fastify({
     logger: process.env.NODE_ENV === 'test' ? false : { level: process.env.LOG_LEVEL ?? 'info' },
     // Off unless a deployment says otherwise. Behind a proxy every client
     // otherwise shares one address, which collapses the rate limit buckets into
-    // one and records the proxy as the source of every captured request.
-    trustProxy,
+    // one and records the proxy as the source of every captured request. Turned
+    // on without a proxy in front, a client could spoof its own address.
+    trustProxy: process.env.TRUST_PROXY === 'true',
     // A sender that opens a connection and then stops writing holds a slot until
     // this fires. Fastify leaves it off by default, which lets a handful of slow
     // senders hold every connection the process has.
     requestTimeout: 30_000,
     // Trusts the id a proxy already assigned, so one request keeps one id across services.
     genReqId: (request) => (request.headers['x-request-id'] as string) ?? randomUUID(),
-  });
-
-  // A 5xx answers with a request id only. Its message is logged, never sent,
-  // because the database driver puts the failed statement and the values it
-  // carried into that message. A 4xx keeps the shape the framework sends.
-  app.setErrorHandler((error: FastifyError, request, reply) => {
-    const status = error.statusCode ?? 500;
-    if (status < 500) {
-      return reply
-        .code(status)
-        .send({ statusCode: status, code: error.code, error: STATUS_CODES[status], message: error.message });
-    }
-
-    request.log.error(
-      { code: error.code, name: error.name, message: withoutValues(error.message), stack: error.stack },
-      'request failed',
-    );
-    return reply.code(status).send({ error: 'internal_error', requestId: request.id });
   });
 
   // Echoes the id so a caller can quote it when reporting a problem.
@@ -94,13 +59,13 @@ export function buildApp(
     // Open when no token is set, which suits local use; a deployment sets one
     // and gives it to whatever scrapes this.
     const expected = process.env.METRICS_TOKEN;
-    if (expected && !matches(request.headers.authorization, `Bearer ${expected}`)) {
+    if (expected && request.headers.authorization !== `Bearer ${expected}`) {
       return reply.code(401).send({ error: 'unauthenticated' });
     }
 
     return collectMetrics(db);
   });
-  registerAuthRoutes(app, db, redis, secureCookies);
+  registerAuthRoutes(app, db, redis);
   registerBinRoutes(app, db);
   registerCaptureRoutes(app, db, redis);
   registerReadRoutes(app, db);

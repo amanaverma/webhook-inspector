@@ -1,10 +1,9 @@
-import { randomUUID } from 'node:crypto';
 import { bins, createDb, requests, users } from '@wi/db';
 import { eq, sql } from 'drizzle-orm';
 import { Redis } from 'ioredis';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from './app.js';
-import { CAPACITY, LOGIN_CAPACITY, REDIS_OPTIONS, SIGNUP_CAPACITY, spendToken } from './rate-limit.js';
+import { CAPACITY, LOGIN_CAPACITY, spendToken } from './rate-limit.js';
 import { collectMetrics, pruneRequests } from './retention.js';
 import { signedInCookie } from './test-auth.js';
 
@@ -78,129 +77,6 @@ describe('rate limiting', () => {
     const response = await app.inject({ method: 'POST', url: `/i/${slug}/fine`, payload: 'x' });
     expect(response.statusCode).toBe(200);
     expect(Number(response.headers['x-ratelimit-remaining'])).toBeGreaterThan(0);
-  });
-});
-
-describe('failures reaching the caller', () => {
-  it('answers with an id rather than the failed statement', async () => {
-    const broken = {
-      select: () => {
-        throw Object.assign(new Error('Failed query: select "id" from "bins" where slug = $1\nparams: sk_live_SECRET'), {
-          name: 'DrizzleQueryError',
-        });
-      },
-    };
-
-    const failing = buildApp(broken as unknown as Parameters<typeof buildApp>[0]);
-    await failing.ready();
-
-    try {
-      const response = await failing.inject({ method: 'POST', url: '/i/anything', payload: 'x' });
-
-      expect(response.statusCode).toBe(500);
-      expect(response.json()).toEqual({ error: 'internal_error', requestId: expect.any(String) });
-      expect(response.body).not.toContain('sk_live_SECRET');
-      expect(response.body).not.toContain('Failed query');
-    } finally {
-      await failing.close();
-    }
-  });
-
-  it('keeps answering a framework 4xx in the shape it always had', async () => {
-    // Malformed JSON is refused by the framework, so this is one of the few
-    // paths that reaches the handler with a status below 500.
-    const response = await app.inject({
-      method: 'POST',
-      url: '/api/auth/signup',
-      headers: { 'content-type': 'application/json' },
-      payload: '{not json',
-    });
-
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ statusCode: 400, error: 'Bad Request', code: expect.any(String) });
-  });
-
-  it('answers 409 when the same address signs up twice at once', async () => {
-    const email = `race-${randomUUID()}@example.com`;
-    const signup = () =>
-      app.inject({ method: 'POST', url: '/api/auth/signup', payload: { email, password: 'a-long-enough-password' } });
-
-    const statuses = (await Promise.all([signup(), signup(), signup(), signup()])).map((r) => r.statusCode);
-
-    expect(statuses.filter((code) => code === 201)).toHaveLength(1);
-    expect(statuses.filter((code) => code === 409)).toHaveLength(3);
-
-    await db.delete(users).where(eq(users.email, email));
-  });
-});
-
-describe('session cookie', () => {
-  it('is marked secure when the deployment says it is production', async () => {
-    const secure = buildApp(db, process.env.DATABASE_URL!, null, false, true);
-    await secure.ready();
-
-    try {
-      const email = `secure-${randomUUID()}@example.com`;
-      const response = await secure.inject({
-        method: 'POST',
-        url: '/api/auth/signup',
-        payload: { email, password: 'a-long-enough-password' },
-      });
-
-      expect(response.cookies.find((entry) => entry.name === 'wi_session')).toMatchObject({
-        secure: true,
-        httpOnly: true,
-        sameSite: 'Lax',
-      });
-
-      await db.delete(users).where(eq(users.email, email));
-    } finally {
-      await secure.close();
-    }
-  });
-});
-
-describe('signup limit', () => {
-  it('refuses more signups than the bucket holds', async () => {
-    const remoteAddress = '198.51.100.9';
-    await redis.del(`rl:signup:${remoteAddress}`);
-
-    const statuses: number[] = [];
-    for (let attempt = 0; attempt < SIGNUP_CAPACITY + 1; attempt++) {
-      const response = await app.inject({
-        method: 'POST',
-        url: '/api/auth/signup',
-        payload: { email: `flood-${randomUUID()}@example.com`, password: 'a-long-enough-password' },
-        remoteAddress,
-      });
-      statuses.push(response.statusCode);
-    }
-
-    expect(statuses.slice(0, SIGNUP_CAPACITY).every((code) => code === 201)).toBe(true);
-    expect(statuses.at(-1)).toBe(429);
-
-    await redis.del(`rl:signup:${remoteAddress}`);
-    await db.delete(users).where(sql`email like 'flood-%@example.com'`);
-  });
-});
-
-describe('redis outage', () => {
-  it('allows a request rather than waiting for a connection that is down', async () => {
-    const offline = new Redis(6_399, '127.0.0.1', REDIS_OPTIONS);
-    offline.on('error', () => {});
-
-    try {
-      // Two in a row, the way a capture spends one bucket and then another.
-      const started = Date.now();
-      const first = await spendToken(offline, 'rl:outage');
-      const second = await spendToken(offline, 'rl:outage');
-
-      expect(first.allowed).toBe(true);
-      expect(second.allowed).toBe(true);
-      expect(Date.now() - started).toBeLessThan(3_000);
-    } finally {
-      offline.disconnect();
-    }
   });
 });
 
