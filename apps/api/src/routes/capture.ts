@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { bins, requests, type Db } from '@wi/db';
 import { and, eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply, FastifyRequest, HTTPMethods } from 'fastify';
@@ -36,6 +37,27 @@ type CapturedBody = {
   size: number;
   truncated: boolean;
 };
+
+/**
+ * Returns the parsed query with NUL characters written as `%00`.
+ *
+ * Postgres rejects a NUL inside jsonb, which would fail the insert and lose the
+ * request. Writing it back the way it arrived on the wire keeps two keys that
+ * differ only by a NUL apart, and `rawQuery` holds the exact bytes either way.
+ */
+function withoutNulls(query: Record<string, string | string[]>): Record<string, string | string[]> {
+  const clean = (value: string): string => value.replaceAll('\u0000', '%00');
+  const cleaned: Record<string, string | string[]> = {};
+
+  for (const [key, value] of Object.entries(query)) {
+    const values = (Array.isArray(value) ? value : [value]).map(clean);
+    const existing = cleaned[clean(key)];
+    const merged = existing === undefined ? values : [...(Array.isArray(existing) ? existing : [existing]), ...values];
+    cleaned[clean(key)] = merged.length === 1 ? merged[0]! : merged;
+  }
+
+  return cleaned;
+}
 
 /**
  * Returns the request headers as stored for a capture.
@@ -180,14 +202,16 @@ export function registerCaptureRoutes(app: FastifyInstance, db: Db, redis: Redis
             binId: bin.id,
             method: request.method,
             path: queryStart === -1 ? request.url : request.url.slice(0, queryStart),
-            query: request.query as Record<string, string | string[]>,
+            query: withoutNulls(request.query as Record<string, string | string[]>),
             rawQuery: queryStart === -1 ? null : request.url.slice(queryStart + 1),
             headers: flattenHeaders(request),
             body: body.bytes,
             bodySize: body.size,
             truncated: body.truncated,
             contentType: request.sentContentType ?? request.headers['content-type'] ?? null,
-            sourceIp: request.ip,
+            // A proxy may pass something that is not an address, such as
+            // `unknown` or a host and port, which the column would refuse.
+            sourceIp: isIP(request.ip) ? request.ip : null,
           })
           .returning({ id: requests.id, receivedAt: requests.receivedAt });
 
