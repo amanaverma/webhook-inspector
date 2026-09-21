@@ -118,7 +118,8 @@ describe('GET /api/bins/:slug/requests', () => {
 
   it('returns every request when many share a millisecond', async () => {
     const [bin] = await db.select({ id: bins.id }).from(bins).where(eq(bins.slug, slug));
-    const base = new Date('2026-01-01T00:00:00.123Z');
+    // Recent, so a retention run in another suite never deletes these mid-test.
+    const base = new Date();
 
     await db.execute(sql`
       insert into requests (bin_id, method, path, query, headers, body, body_size, received_at)
