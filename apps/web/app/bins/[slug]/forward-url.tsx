@@ -20,7 +20,10 @@ export function ForwardUrl({ slug, current }: { slug: string; current: string | 
     });
 
     if (!response.ok) {
-      setError('Enter an http or https URL, or leave it empty to stop forwarding.');
+      const body = (await response.json().catch(() => ({}))) as { error?: string; reason?: string };
+      if (response.status === 401 || response.status === 404) setError('Your session has expired. Sign in again.');
+      else if (body.reason) setError(`That target was refused: ${body.reason}.`);
+      else setError('Enter an http or https URL, or leave it empty to stop forwarding.');
       return;
     }
 

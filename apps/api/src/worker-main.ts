@@ -10,14 +10,23 @@ const config = loadConfig();
 const db = createDb(config.databaseUrl);
 const stop = startWorker(db);
 
-/** Removes expired sessions and requests past the retention window. */
+/**
+ * Removes expired sessions and requests past the retention window.
+ *
+ * Never rejects, since a failure here is worth logging but must not stop the
+ * process delivering.
+ */
 async function prune(): Promise<void> {
-  const [requests, sessions] = await Promise.all([
-    pruneRequests(db, config.retentionDays),
-    pruneSessions(db),
-  ]);
-  if (requests > 0 || sessions > 0) {
-    console.log(`pruned ${requests} requests and ${sessions} sessions`);
+  try {
+    const [requests, sessions] = await Promise.all([
+      pruneRequests(db, config.retentionDays),
+      pruneSessions(db),
+    ]);
+    if (requests > 0 || sessions > 0) {
+      console.log(`pruned ${requests} requests and ${sessions} sessions`);
+    }
+  } catch (error) {
+    console.error('prune failed', error);
   }
 }
 

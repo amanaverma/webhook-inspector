@@ -1,10 +1,26 @@
 import Link from 'next/link';
-import { listBins } from '@/lib/api';
+import { currentUser, listBins } from '@/lib/api';
 import { CreateBinForm } from './create-bin-form';
 
 export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
+  const user = await currentUser();
+
+  if (!user) {
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <h1 className="text-xl font-semibold tracking-tight">Bins</h1>
+        <p className="text-sm text-slate-600 dark:text-slate-400">
+          Bins belong to an account, so their captured requests stay private to you.
+        </p>
+        <Link href="/login" className="rounded bg-slate-900 px-4 py-2 text-sm font-medium text-white dark:bg-slate-100 dark:text-slate-900">
+          Sign in to create a bin
+        </Link>
+      </div>
+    );
+  }
+
   const bins = await listBins();
 
   return (

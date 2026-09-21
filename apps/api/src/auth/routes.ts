@@ -2,8 +2,23 @@ import type { Db } from '@wi/db';
 import { users } from '@wi/db';
 import { eq } from 'drizzle-orm';
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { Redis } from 'ioredis';
 import { z } from 'zod';
-import { checkPassword, COOKIE_NAME, createSession, destroySession, hashPassword } from './session.js';
+import {
+  LOGIN_CAPACITY,
+  LOGIN_IP_CAPACITY,
+  LOGIN_IP_REFILL_PER_SECOND,
+  LOGIN_REFILL_PER_SECOND,
+  spendToken,
+} from '../rate-limit.js';
+import {
+  checkPassword,
+  COOKIE_NAME,
+  createSession,
+  destroySession,
+  hashPassword,
+  verifyAgainstDummy,
+} from './session.js';
 
 const credentials = z.object({
   email: z.email().max(254),
@@ -26,7 +41,7 @@ function setSessionCookie(reply: FastifyReply, token: string, expiresAt: Date): 
  * Login answers the same 401 whether the email is unknown or the password is
  * wrong, so the response cannot be used to learn which addresses have accounts.
  */
-export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
+export function registerAuthRoutes(app: FastifyInstance, db: Db, redis: Redis | null = null): void {
   app.post('/api/auth/signup', async (request, reply) => {
     const parsed = credentials.safeParse(request.body ?? {});
     if (!parsed.success) {
@@ -51,13 +66,33 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db): void {
     const parsed = credentials.safeParse(request.body ?? {});
     if (!parsed.success) return reply.code(401).send({ error: 'invalid_credentials' });
 
+    if (redis) {
+      const email = parsed.data.email.toLowerCase();
+      // Keyed by address and client together, so guessing against one account is
+      // limited without letting an attacker lock its owner out by burning a
+      // bucket keyed on the address alone. The wider per client bucket bounds
+      // someone working through many addresses.
+      const buckets = await Promise.all([
+        spendToken(redis, `rl:login:${request.ip}:${email}`, LOGIN_CAPACITY, LOGIN_REFILL_PER_SECOND),
+        spendToken(redis, `rl:login:ip:${request.ip}`, LOGIN_IP_CAPACITY, LOGIN_IP_REFILL_PER_SECOND),
+      ]);
+      if (buckets.some((bucket) => !bucket.allowed)) {
+        return reply.code(429).send({ error: 'too_many_attempts' });
+      }
+    }
+
     const [user] = await db
       .select()
       .from(users)
       .where(eq(users.email, parsed.data.email.toLowerCase()))
       .limit(1);
 
-    const ok = user ? await checkPassword(parsed.data.password, user.passwordHash) : false;
+    // Hashing runs either way, so the reply takes the same time whether or not
+    // the address has an account.
+    const ok = user
+      ? await checkPassword(parsed.data.password, user.passwordHash)
+      : await verifyAgainstDummy(parsed.data.password);
+
     if (!user || !ok) return reply.code(401).send({ error: 'invalid_credentials' });
 
     const { token, expiresAt } = await createSession(db, user.id);

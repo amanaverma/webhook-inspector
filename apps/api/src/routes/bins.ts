@@ -1,6 +1,7 @@
 import { bins, type Db } from '@wi/db';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { checkTargetUrl } from '../delivery/target-url.js';
 import { generateSlug } from '../slug.js';
 
 function isHttpUrl(value: string): boolean {
@@ -22,6 +23,8 @@ const createBinBody = z.object({
 
 export function registerBinRoutes(app: FastifyInstance, db: Db): void {
   app.post('/api/bins', async (request, reply) => {
+    if (!request.user) return reply.code(401).send({ error: 'unauthenticated' });
+
     const parsed = createBinBody.safeParse(request.body ?? {});
     if (!parsed.success) {
       return reply.code(400).send({
@@ -33,11 +36,16 @@ export function registerBinRoutes(app: FastifyInstance, db: Db): void {
       });
     }
 
+    if (parsed.data.forwardUrl) {
+      const target = await checkTargetUrl(parsed.data.forwardUrl);
+      if (!target.ok) return reply.code(400).send({ error: 'invalid_forward_url', reason: target.reason });
+    }
+
     const [bin] = await db
       .insert(bins)
       .values({
         slug: generateSlug(),
-        userId: request.user?.id ?? null,
+        userId: request.user.id,
         name: parsed.data.name,
         forwardUrl: parsed.data.forwardUrl ?? null,
       })

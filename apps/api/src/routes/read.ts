@@ -1,9 +1,10 @@
 import { bins, deliveries, requests, type Db } from '@wi/db';
-import { and, asc, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { loadOwnedBin } from '../auth/ownership.js';
 import { enqueueReplay } from '../delivery/queue.js';
+import { checkTargetUrl } from '../delivery/target-url.js';
 import { encodeBody } from './body-encoding.js';
 import { decodeCursor, encodeCursor } from './cursor.js';
 
@@ -28,9 +29,15 @@ const listQuery = z.object({
  * fetched. `nextCursor` is null on the last page.
  */
 export function registerReadRoutes(app: FastifyInstance, db: Db): void {
-  app.get('/api/bins', async (request) => {
-    const visible = request.user ? eq(bins.userId, request.user.id) : isNull(bins.userId);
-    const rows = await db.select().from(bins).where(visible).orderBy(desc(bins.createdAt));
+  app.get('/api/bins', async (request, reply) => {
+    if (!request.user) return reply.code(401).send({ error: 'unauthenticated' });
+
+    const rows = await db
+      .select()
+      .from(bins)
+      .where(eq(bins.userId, request.user.id))
+      .orderBy(desc(bins.createdAt));
+
     return { bins: rows };
   });
 
@@ -61,12 +68,12 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
 
     let after = undefined;
     if (parsed.data.cursor !== undefined) {
-      const cursor = decodeCursor(parsed.data.cursor);
-      if (!cursor) return reply.code(400).send({ error: 'invalid_cursor' });
-      after = or(
-        lt(requests.receivedAt, cursor.receivedAt),
-        and(eq(requests.receivedAt, cursor.receivedAt), lt(requests.id, cursor.id)),
-      );
+      const cursorId = decodeCursor(parsed.data.cursor);
+      if (!cursorId) return reply.code(400).send({ error: 'invalid_cursor' });
+
+      // Compared in SQL so the microseconds in received_at survive, which a
+      // JavaScript Date would truncate.
+      after = sql`(${requests.receivedAt}, ${requests.id}) < (select received_at, id from ${requests} where id = ${cursorId}::uuid)`;
     }
 
     const rows = await db
@@ -127,6 +134,11 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
     const bin = await loadOwnedBin(db, slug, request.user);
     if (!bin) return reply.code(404).send({ error: 'not_found' });
 
+    if (parsed.data.forwardUrl) {
+      const target = await checkTargetUrl(parsed.data.forwardUrl);
+      if (!target.ok) return reply.code(400).send({ error: 'invalid_forward_url', reason: target.reason });
+    }
+
     const [updated] = await db
       .update(bins)
       .set(parsed.data)
@@ -141,7 +153,7 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
     if (!UUID.test(id)) return reply.code(400).send({ error: 'invalid_id' });
 
     const [row] = await db
-      .select({ slug: bins.slug, forwardUrl: bins.forwardUrl })
+      .select({ slug: bins.slug, forwardUrl: bins.forwardUrl, truncated: requests.truncated })
       .from(requests)
       .innerJoin(bins, eq(bins.id, requests.binId))
       .where(eq(requests.id, id))
@@ -152,6 +164,7 @@ export function registerReadRoutes(app: FastifyInstance, db: Db): void {
     const bin = await loadOwnedBin(db, row.slug, request.user);
     if (!bin) return reply.code(404).send({ error: 'not_found' });
     if (!row.forwardUrl) return reply.code(409).send({ error: 'no_forward_url' });
+    if (row.truncated) return reply.code(409).send({ error: 'body_truncated' });
 
     return reply.code(202).send(await enqueueReplay(db, id, row.forwardUrl));
   });

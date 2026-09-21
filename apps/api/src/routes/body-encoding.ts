@@ -15,7 +15,12 @@ export function encodeBody(
 ): { body: string; bodyEncoding: 'utf8' | 'base64' } {
   if (contentType && TEXT_TYPES.test(contentType)) {
     try {
-      return { body: new TextDecoder('utf-8', { fatal: true }).decode(body), bodyEncoding: 'utf8' };
+      // Keeping the byte order mark matters because a caller comparing a
+      // signature over the body needs the bytes the provider sent.
+      return {
+        body: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(body),
+        bodyEncoding: 'utf8',
+      };
     } catch {
       // Falls through to base64 below.
     }

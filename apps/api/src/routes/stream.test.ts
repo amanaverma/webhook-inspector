@@ -2,18 +2,22 @@ import { bins, createDb } from '@wi/db';
 import { eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
+import { signedInCookie } from '../test-auth.js';
 
 const db = createDb(process.env.DATABASE_URL!);
 const app = buildApp(db);
+
+let cookie: string;
 
 let slug: string;
 let baseUrl: string;
 
 beforeAll(async () => {
+  cookie = await signedInCookie(app);
   await app.listen({ port: 0, host: '127.0.0.1' });
   const address = app.server.address();
   baseUrl = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}`;
-  slug = (await app.inject({ method: 'POST', url: '/api/bins', payload: { name: 'Stream' } })).json().slug;
+  slug = (await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'Stream' } })).json().slug;
 });
 
 afterAll(async () => {
@@ -23,6 +27,7 @@ afterAll(async () => {
 
 /** Reads the stream until `count` data events have arrived, then aborts it. */
 async function collect(count: number, headers: Record<string, string> = {}) {
+  headers = { cookie, ...headers };
   const controller = new AbortController();
   const response = await fetch(`${baseUrl}/api/bins/${slug}/stream`, { headers, signal: controller.signal });
   const reader = response.body!.getReader();

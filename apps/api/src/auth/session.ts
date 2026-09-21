@@ -15,6 +15,20 @@ export async function hashPassword(password: string): Promise<string> {
   return hash(password);
 }
 
+/** A hash of a value nobody knows, used to spend the same time on a missing account. */
+const DUMMY_HASH = hash(randomBytes(32).toString('base64url'));
+
+/**
+ * Verifies a password against a throwaway hash and always returns false.
+ *
+ * Exists so a login for an unknown address costs the same as one for a known
+ * address, which stops response time revealing which addresses have accounts.
+ */
+export async function verifyAgainstDummy(password: string): Promise<false> {
+  await checkPassword(password, await DUMMY_HASH);
+  return false;
+}
+
 /**
  * Checks a password against a stored hash.
  *

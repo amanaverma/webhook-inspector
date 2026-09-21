@@ -1,6 +1,6 @@
 import { bins, createDb, users } from '@wi/db';
 import { eq } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
 import { COOKIE_NAME } from './session.js';
 
@@ -34,7 +34,9 @@ beforeAll(async () => {
     payload: { name: 'Alice bin' },
   })).json().slug;
 
-  orphanSlug = (await app.inject({ method: 'POST', url: '/api/bins', payload: { name: 'Orphan' } })).json().slug;
+  // Written straight to the database, since a bin with no owner can no longer be created.
+  orphanSlug = 'orphanbin1';
+  await db.insert(bins).values({ slug: orphanSlug, name: 'Orphan', userId: null });
 });
 
 afterAll(async () => {
@@ -139,13 +141,65 @@ describe('bin ownership', () => {
     expect(response.statusCode).toBe(200);
   });
 
-  it('keeps a bin with no owner reachable', async () => {
+  it('refuses a bin with no owner, since every bin now belongs to an account', async () => {
     const response = await app.inject({ method: 'GET', url: `/api/bins/${orphanSlug}` });
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode).toBe(404);
   });
 
   it('still captures on another user bin, since providers have no session', async () => {
     const response = await app.inject({ method: 'POST', url: `/i/${aliceSlug}/hook`, payload: 'x' });
     expect(response.statusCode).toBe(200);
+  });
+});
+
+describe('bin creation requires an account', () => {
+  it('refuses to create a bin without a session', async () => {
+    const response = await app.inject({ method: 'POST', url: '/api/bins', payload: { name: 'anon' } });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('refuses to list bins without a session', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/bins' });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('never returns another account bin in the list', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/bins', headers: { cookie: bobCookie } });
+    const slugs = response.json().bins.map((bin: { slug: string }) => bin.slug);
+    expect(slugs).not.toContain(aliceSlug);
+    expect(slugs).not.toContain(orphanSlug);
+  });
+});
+
+describe('forward targets', () => {
+  // Development allows private targets, so the production rule is what is tested here.
+  const allowPrivate = process.env.FORWARD_ALLOW_PRIVATE;
+  beforeEach(() => delete process.env.FORWARD_ALLOW_PRIVATE);
+  afterEach(() => {
+    if (allowPrivate !== undefined) process.env.FORWARD_ALLOW_PRIVATE = allowPrivate;
+  });
+
+  it('refuses a private address when a bin is created', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/bins',
+      headers: { cookie: aliceCookie },
+      payload: { name: 'ssrf', forwardUrl: 'http://169.254.169.254/latest/meta-data/' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe('invalid_forward_url');
+  });
+
+  it('refuses a private address when a bin is updated', async () => {
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/bins/${aliceSlug}`,
+      headers: { cookie: aliceCookie },
+      payload: { forwardUrl: 'http://127.0.0.1:4555/admin' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toBe('invalid_forward_url');
   });
 });

@@ -41,6 +41,8 @@ jobs:
     env:
       DATABASE_URL: postgres://wi:wi@localhost:5432/webhook_inspector
       REDIS_URL: redis://localhost:6379
+      # The delivery tests forward to a target on localhost.
+      FORWARD_ALLOW_PRIVATE: 'true'
 
     steps:
       - uses: actions/checkout@v4

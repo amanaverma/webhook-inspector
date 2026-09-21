@@ -1,24 +1,19 @@
-export type Cursor = { receivedAt: Date; id: string };
-
-/** Encodes the sort key of the last row on a page. */
-export function encodeCursor(cursor: Cursor): string {
-  return Buffer.from(`${cursor.receivedAt.toISOString()}|${cursor.id}`).toString('base64url');
-}
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Decodes a cursor produced by `encodeCursor`.
+ * Encodes the id of the last row on a page.
  *
- * Returns null for anything that does not decode to a valid timestamp and UUID,
- * so a caller can answer 400 rather than trusting a value that arrived in a
- * query string.
+ * Only the id travels. The sort position is looked up from the row itself when
+ * the next page is read, because `received_at` holds microseconds that a
+ * JavaScript Date truncates, which would make rows sharing a millisecond with
+ * the last row of a page unreachable.
  */
-export function decodeCursor(value: string): Cursor | null {
-  const [timestamp, id, ...rest] = Buffer.from(value, 'base64url').toString('utf8').split('|');
-  if (!timestamp || !id || rest.length > 0) return null;
+export function encodeCursor(row: { id: string }): string {
+  return Buffer.from(row.id).toString('base64url');
+}
 
-  const receivedAt = new Date(timestamp);
-  if (Number.isNaN(receivedAt.getTime())) return null;
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return null;
-
-  return { receivedAt, id };
+/** Returns the row id a cursor carries, or null if it is not one we issued. */
+export function decodeCursor(value: string): string | null {
+  const id = Buffer.from(value, 'base64url').toString('utf8');
+  return UUID.test(id) ? id : null;
 }

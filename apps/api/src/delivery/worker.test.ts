@@ -1,13 +1,17 @@
 import { createServer, type Server } from 'node:http';
 import { bins, createDb, deliveries, requests } from '@wi/db';
 import { asc, eq } from 'drizzle-orm';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.js';
+import { MAX_BODY_BYTES } from '../routes/capture.js';
 import { claimDue, enqueue } from './queue.js';
-import { runOnce } from './worker.js';
+import { deliveryUrl, runOnce } from './worker.js';
+import { signedInCookie } from '../test-auth.js';
 
 const db = createDb(process.env.DATABASE_URL!);
 const app = buildApp(db);
+
+let cookie: string;
 
 type Hit = { method: string; url: string; headers: Record<string, string | string[] | undefined>; body: Buffer };
 
@@ -18,6 +22,7 @@ let respond: (hit: Hit) => { status: number; delayMs?: number } = () => ({ statu
 let slug: string;
 
 beforeAll(async () => {
+  cookie = await signedInCookie(app);
   await app.ready();
 
   server = createServer((req, res) => {
@@ -38,8 +43,8 @@ beforeAll(async () => {
   const address = server.address();
   target = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : 0}/hook`;
 
-  slug = (await app.inject({ method: 'POST', url: '/api/bins', payload: { name: 'Delivery' } })).json().slug;
-  await app.inject({ method: 'PATCH', url: `/api/bins/${slug}`, payload: { forwardUrl: target } });
+  slug = (await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'Delivery' } })).json().slug;
+  await app.inject({ headers: { cookie }, method: 'PATCH', url: `/api/bins/${slug}`, payload: { forwardUrl: target } });
 });
 
 afterAll(async () => {
@@ -132,9 +137,10 @@ describe('delivery worker', () => {
   it('records a transport failure with no status', async () => {
     respond = () => ({ status: 200 });
     const id = await capture('/unreachable', 'x', 'text/plain');
-    await db.update(deliveries).set({ targetUrl: 'http://127.0.0.1:1/nothing' }).where(eq(deliveries.requestId, id));
+    await db.update(bins).set({ forwardUrl: 'http://127.0.0.1:1/nothing' }).where(eq(bins.slug, slug));
 
     await runOnce(db);
+    await db.update(bins).set({ forwardUrl: target }).where(eq(bins.slug, slug));
 
     const [attempt] = await attemptsFor(id);
     expect(attempt?.state).toBe('failed');
@@ -162,13 +168,53 @@ describe('delivery worker', () => {
     expect(await attemptsFor(id)).toHaveLength(1);
   });
 
+  it('retries a capture and a replay without displacing each other', async () => {
+    respond = () => ({ status: 500 });
+    const id = await capture('/two-chains', 'x', 'text/plain');
+    await runOnce(db);
+
+    await app.inject({ headers: { cookie }, method: 'POST', url: `/api/requests/${id}/replay` });
+    await runOnce(db);
+
+    const attempts = await attemptsFor(id);
+    const queued = attempts.filter((row) => row.state === 'pending');
+    expect(attempts.filter((row) => row.attempt === 1)).toHaveLength(2);
+    expect(queued).toHaveLength(2);
+    expect(new Set(queued.map((row) => row.chainKey)).size).toBe(2);
+  });
+
+  it('sends a queued retry to the forward URL as it stands now', async () => {
+    respond = () => ({ status: 500 });
+    const id = await capture('/moved', 'x', 'text/plain');
+    await runOnce(db);
+
+    try {
+      await db.update(bins).set({ forwardUrl: null }).where(eq(bins.slug, slug));
+      await db.update(deliveries).set({ nextAttemptAt: new Date() }).where(eq(deliveries.requestId, id));
+      await runOnce(db);
+      expect((await attemptsFor(id)).every((row) => row.state !== 'sending')).toBe(true);
+      expect(await attemptsFor(id)).toHaveLength(2);
+    } finally {
+      await db.update(bins).set({ forwardUrl: target }).where(eq(bins.slug, slug));
+    }
+
+    respond = () => ({ status: 200 });
+    await db.update(deliveries).set({ nextAttemptAt: new Date() }).where(eq(deliveries.requestId, id));
+    // Other rows in the shared queue can fill a batch, so drain rather than
+    // expecting this row on the first tick.
+    for (let tick = 0; tick < 5; tick++) await runOnce(db);
+
+    const sent = (await attemptsFor(id)).find((row) => row.state === 'sent');
+    expect(sent?.targetUrl).toBe(target);
+  });
+
   it('replays on demand and sends again', async () => {
     respond = () => ({ status: 200 });
     const id = await capture('/replayed', 'x', 'text/plain');
     await runOnce(db);
 
     hits = [];
-    const replay = await app.inject({ method: 'POST', url: `/api/requests/${id}/replay` });
+    const replay = await app.inject({ headers: { cookie }, method: 'POST', url: `/api/requests/${id}/replay` });
     expect(replay.statusCode).toBe(202);
 
     await runOnce(db);
@@ -177,13 +223,28 @@ describe('delivery worker', () => {
   });
 
   it('refuses to replay when the bin has no forward URL', async () => {
-    const plain = (await app.inject({ method: 'POST', url: '/api/bins', payload: { name: 'No target' } })).json();
+    const plain = (await app.inject({ headers: { cookie }, method: 'POST', url: '/api/bins', payload: { name: 'No target' } })).json();
     const captured = (await app.inject({ method: 'POST', url: `/i/${plain.slug}/x`, payload: 'x' })).json();
 
-    const response = await app.inject({ method: 'POST', url: `/api/requests/${captured.id}/replay` });
+    const response = await app.inject({ headers: { cookie }, method: 'POST', url: `/api/requests/${captured.id}/replay` });
     expect(response.statusCode).toBe(409);
 
     await db.delete(bins).where(eq(bins.id, plain.id));
+  });
+
+  it('refuses to replay a truncated body', async () => {
+    const oversized = Buffer.alloc(MAX_BODY_BYTES + 1, 'z');
+    const captured = await app.inject({
+      method: 'POST',
+      url: `/i/${slug}/cut`,
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: oversized,
+    });
+
+    const response = await app.inject({ headers: { cookie }, method: 'POST', url: `/api/requests/${captured.json().id}/replay` });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: 'body_truncated' });
+    expect(await attemptsFor(captured.json().id)).toHaveLength(0);
   });
 
   it('shows the attempts on the request detail', async () => {
@@ -191,7 +252,7 @@ describe('delivery worker', () => {
     const id = await capture('/history', 'x', 'text/plain');
     await runOnce(db);
 
-    const detail = (await app.inject({ method: 'GET', url: `/api/requests/${id}` })).json();
+    const detail = (await app.inject({ headers: { cookie }, method: 'GET', url: `/api/requests/${id}` })).json();
     expect(detail.deliveries).toHaveLength(1);
     expect(detail.deliveries[0].state).toBe('sent');
   });
@@ -228,5 +289,116 @@ describe('worker crash recovery', () => {
     const attempts = await attemptsFor(id);
     expect(attempts).toHaveLength(1);
     expect(attempts[0]!.state).toBe('sent');
+  });
+});
+
+describe('blocked targets', () => {
+  const allowPrivate = process.env.FORWARD_ALLOW_PRIVATE;
+  beforeEach(() => delete process.env.FORWARD_ALLOW_PRIVATE);
+  afterEach(() => {
+    if (allowPrivate !== undefined) process.env.FORWARD_ALLOW_PRIVATE = allowPrivate;
+  });
+
+  it('refuses to call a private address and does not retry', async () => {
+    respond = () => ({ status: 200 });
+    const id = await capture('/blocked', 'x', 'text/plain');
+    hits = [];
+
+    await runOnce(db);
+
+    const attempts = await attemptsFor(id);
+    expect(hits).toHaveLength(0);
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0]!.state).toBe('dead');
+    expect(attempts[0]!.error).toContain('blocked target');
+  });
+});
+
+describe('deliveryUrl', () => {
+  const base = {
+    id: 'd', requestId: 'r', attempt: 1, method: 'POST',
+    headers: {}, body: Buffer.alloc(0), slug: 'abc123', rawQuery: null, chainKey: 'r:capture',
+  };
+
+  it('appends the path below the slug and keeps the query', () => {
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook', path: '/i/abc123/events/v2', query: { sig: 'x' } }))
+      .toBe('https://example.com/hook/events/v2?sig=x');
+  });
+
+  it('leaves a bare capture path alone', () => {
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook', path: '/i/abc123', query: {} }))
+      .toBe('https://example.com/hook');
+  });
+
+  it('does not double the slash when the target ends in one', () => {
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook/', path: '/i/abc123/x', query: {} }))
+      .toBe('https://example.com/hook/x');
+  });
+
+  it('refuses a capture path that leaves the target path', () => {
+    const escaping = ['/i/abc123/../../admin', '/i/abc123/%2e%2e/%2e%2e/admin', '/i/abc123/.%2e/secret'];
+    for (const path of escaping) {
+      expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook', path, query: {} }), path).toBeNull();
+    }
+  });
+
+  it('ignores a path that does not start with the capture prefix', () => {
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook', path: '/i/%61bc123/x', query: {} }))
+      .toBe('https://example.com/hook');
+  });
+
+  it('keeps a path whose characters need encoding', () => {
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook', path: '/i/abc123/a b', query: {} }))
+      .toBe('https://example.com/hook/a%20b');
+  });
+
+  it('appends the raw query unchanged, after the target own query', () => {
+    const raw = 'zeta=1&a=x%20y&flag&b=1&zeta=2';
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook', path: '/i/abc123', query: {}, rawQuery: raw }))
+      .toBe(`https://example.com/hook?${raw}`);
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook?env=prod#top', path: '/i/abc123', query: {}, rawQuery: 'env=x' }))
+      .toBe('https://example.com/hook?env=prod&env=x');
+  });
+
+  it('keeps the target own query parameter when an older row has no raw query', () => {
+    expect(deliveryUrl({ ...base, targetUrl: 'https://example.com/hook?env=prod', path: '/i/abc123', query: { env: 'spoofed' } }))
+      .toBe('https://example.com/hook?env=prod');
+  });
+});
+
+describe('forwarding fidelity', () => {
+  it('sends the path and query the provider used', async () => {
+    respond = () => ({ status: 200 });
+    hits = [];
+    await app.inject({
+      method: 'POST',
+      url: `/i/${slug}/webhooks/stripe?sig=abc&attempt=2&flag&note=a%20b`,
+      headers: { 'content-type': 'application/json' },
+      payload: '{"n":1}',
+    });
+
+    await runOnce(db);
+
+    expect(hits).toHaveLength(1);
+
+    expect(hits[0]!.url).toBe('/hook/webhooks/stripe?sig=abc&attempt=2&flag&note=a%20b');
+  });
+
+  it('does not forward a truncated body', async () => {
+    respond = () => ({ status: 200 });
+    hits = [];
+    const oversized = Buffer.alloc(MAX_BODY_BYTES + 1024, 'z');
+    const response = await app.inject({
+      method: 'POST',
+      url: `/i/${slug}/too-big`,
+      headers: { 'content-type': 'application/octet-stream' },
+      payload: oversized,
+    });
+
+    await runOnce(db);
+
+    expect(response.statusCode).toBe(413);
+    expect(hits).toHaveLength(0);
+    expect(await attemptsFor(response.json().id)).toHaveLength(0);
   });
 });
