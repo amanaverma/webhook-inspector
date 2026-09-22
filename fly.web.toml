@@ -1,0 +1,28 @@
+# The web app runs next to the API rather than on a separate host, so browser
+# calls reach the API from the caller's own address instead of one shared
+# egress address, which the per-address login and signup limits depend on.
+app = 'webhook-inspector-web'
+primary_region = 'iad'
+
+[build]
+  dockerfile = 'apps/web/Dockerfile'
+
+  # Rewrites are resolved when the app is built, so the API address is fixed
+  # into the image here and set again under [env] for server side rendering.
+  [build.args]
+    API_BASE_URL = 'http://webhook-inspector-api.internal:3000'
+
+[env]
+  PORT = '3001'
+  API_BASE_URL = 'http://webhook-inspector-api.internal:3000'
+  CAPTURE_ORIGIN = 'https://webhook-inspector-api.fly.dev'
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = 'off'
+  min_machines_running = 1
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'
