@@ -27,5 +27,44 @@ services:
       timeout: 3s
       retries: 10
 
+  # The application services. `docker compose --profile full up` runs the whole
+  # stack; without the profile only Postgres and Redis start, which is what the
+  # test suite and `npm run dev` need.
+  migrate:
+    profiles: ["full"]
+    build: .
+    command: ["node", "packages/db/dist/migrate.js"]
+    environment:
+      DATABASE_URL: postgres://wi:wi@postgres:5432/webhook_inspector
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    profiles: ["full"]
+    build: .
+    environment: &app_env
+      NODE_ENV: development
+      DATABASE_URL: postgres://wi:wi@postgres:5432/webhook_inspector
+      REDIS_URL: redis://redis:6379
+      FORWARD_ALLOW_PRIVATE: "true"
+      RETENTION_DAYS: 7
+    ports:
+      - "3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    profiles: ["full"]
+    build: .
+    command: ["node", "apps/api/dist/worker-main.js"]
+    environment: *app_env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   pgdata:
