@@ -66,5 +66,22 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  web:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        API_BASE_URL: http://api:3000
+    environment:
+      # Rewrites bake this in at build time, but server components read it at
+      # run time, so it has to be set in both places.
+      API_BASE_URL: http://api:3000
+      CAPTURE_ORIGIN: http://localhost:3000
+    ports:
+      - "3001:3001"
+    depends_on:
+      - api
+
 volumes:
   pgdata:
