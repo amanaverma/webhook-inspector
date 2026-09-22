@@ -4,12 +4,12 @@
   "type": "module",
   "main": "./dist/index.js",
   "scripts": {
-    "dev": "node --env-file=../../.env --import tsx --watch src/index.ts",
+    "dev": "node --env-file-if-exists=../../.env --import tsx --watch src/index.ts",
     "build": "tsc --build",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "worker": "node --env-file=../../.env dist/worker-main.js",
-    "worker:dev": "node --env-file=../../.env --import tsx --watch src/worker-main.ts"
+    "worker": "node --env-file-if-exists=../../.env dist/worker-main.js",
+    "worker:dev": "node --env-file-if-exists=../../.env --import tsx --watch src/worker-main.ts"
   },
   "devDependencies": {
     "dotenv": "^17.4.2",
