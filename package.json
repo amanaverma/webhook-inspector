@@ -12,7 +12,8 @@
   "scripts": {
     "typecheck": "tsc --build && tsc -p apps/api/tsconfig.test.json",
     "db:up": "docker compose up -d",
-    "db:down": "docker compose down"
+    "db:down": "docker compose down",
+    "loadtest": "node scripts/loadtest.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.19.43",
