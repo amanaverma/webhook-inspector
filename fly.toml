@@ -1,0 +1,52 @@
+# The API and the delivery worker run from one image as two process groups, so
+# the worker can be restarted without interrupting capture.
+app = 'webhook-inspector-api'
+primary_region = 'iad'
+
+[build]
+  dockerfile = 'Dockerfile'
+
+[processes]
+  app = 'node apps/api/dist/index.js'
+  worker = 'node apps/api/dist/worker-main.js'
+
+[deploy]
+  release_command = 'node packages/db/dist/migrate.js'
+
+[env]
+  PORT = '3000'
+  RETENTION_DAYS = '7'
+  # Client addresses come from x-forwarded-for, which the edge proxy appends to
+  # on the way in. Pin this to the range the proxy connects from once the first
+  # deploy has logged it.
+  TRUST_PROXY = 'uniquelocal'
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = 'off'
+  min_machines_running = 1
+  processes = ['app']
+
+  # Live tail holds one connection per open browser tab, so machines are sized
+  # by connection count rather than by requests in flight.
+  [http_service.concurrency]
+    type = 'connections'
+    hard_limit = 400
+    soft_limit = 300
+
+  [[http_service.checks]]
+    path = '/health'
+    interval = '15s'
+    timeout = '5s'
+    grace_period = '10s'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'
+  processes = ['app']
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'
+  processes = ['worker']
