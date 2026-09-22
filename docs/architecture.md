@@ -231,7 +231,7 @@ silently missing whatever arrived while it was gone.
 %%{init: {'theme':'base','themeVariables':{'fontFamily':'ui-sans-serif, system-ui, sans-serif','fontSize':'15px','primaryColor':'#0f766e','primaryTextColor':'#ffffff','primaryBorderColor':'#0b5551','secondaryColor':'#4338ca','secondaryTextColor':'#ffffff','secondaryBorderColor':'#312e9e','tertiaryColor':'#1e293b','tertiaryTextColor':'#e2e8f0','tertiaryBorderColor':'#475569','lineColor':'#64748b','textColor':'#7d8996','actorBkg':'#0f766e','actorTextColor':'#ffffff','actorBorder':'#0b5551','actorLineColor':'#94a3b8','signalColor':'#64748b','signalTextColor':'#7d8996','sequenceNumberColor':'#ffffff','noteBkgColor':'#1e293b','noteTextColor':'#e2e8f0','noteBorderColor':'#475569','labelBoxBkgColor':'#0f766e','labelBoxBorderColor':'#0b5551','labelTextColor':'#ffffff','altSectionBkgColor':'transparent','attributeBackgroundColorOdd':'transparent','attributeBackgroundColorEven':'transparent'}}}%%
 flowchart LR
     subgraph edge[Public]
-        V[Web app<br/>Vercel]
+        V[Web app<br/>Fly.io]
         FL[API and worker<br/>Fly.io]
     end
     subgraph data[Managed data]
@@ -253,3 +253,11 @@ flowchart LR
 The API process and the delivery worker run in the same deployment but as
 separate process types, so the worker can be scaled or restarted without
 interrupting capture.
+
+The web app is a second Fly application and reaches the API over the private
+network, so the two are deployed independently. It proxies `/api` rather than
+being called from the browser directly, which keeps both on one origin and
+needs no CORS setup. That proxy passes `x-forwarded-for` through untouched, so
+the API still sees the address the edge recorded for the caller and the per
+address login and signup limits stay meaningful. Capture never goes through the
+proxy, so providers post straight to the API origin.
