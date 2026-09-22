@@ -7,6 +7,7 @@
   "scripts": {
     "generate": "drizzle-kit generate",
     "migrate": "drizzle-kit migrate",
+    "migrate:deploy": "node dist/migrate.js",
     "studio": "drizzle-kit studio"
   },
   "dependencies": {
